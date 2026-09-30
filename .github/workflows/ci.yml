@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: |
+          for script in *.sh token-stats; do
+            bash -n "$script"
+          done
+      - name: Run Swift tests
+        run: swift test
+      - name: Build release executable
+        run: swift build -c release
