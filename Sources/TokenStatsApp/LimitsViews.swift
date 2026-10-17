@@ -48,12 +48,10 @@ struct MenuBarPanel: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
             } else {
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(store.accounts) { LimitAccountCard(account: $0, compact: true) }
-                    }
+                // A plain stack: a ScrollView has no height of its own and collapses inside the menu.
+                VStack(spacing: 2) {
+                    ForEach(store.accounts) { AccountGlanceRow(account: $0) }
                 }
-                .frame(maxHeight: 520)
             }
 
             Divider()
@@ -113,6 +111,67 @@ struct CLIUpdatesRow: View {
                     .help("Full output is in \(updater.logURL.path)")
             }
         }
+    }
+}
+
+/// One line per account in the menu: who it is, then the percentage left on its main limits.
+struct AccountGlanceRow: View {
+    let account: LimitAccount
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: account.provider.symbol)
+                .foregroundStyle(account.provider.color)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(account.email ?? account.source)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1).truncationMode(.middle)
+                Text([account.provider.rawValue, account.plan].compactMap { $0 }.joined(separator: " "))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if let error = account.error, account.windows.isEmpty {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help(error)
+            }
+            ForEach(account.glanceWindows) { GlanceGauge(window: $0, color: account.provider.color) }
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.04)))
+        .help(account.windows.map { "\($0.title): \(Int($0.remainingPercent.rounded()))% left \(LimitFormat.resetText($0.resetsAt))" }.joined(separator: "\n"))
+    }
+}
+
+private struct GlanceGauge: View {
+    let window: LimitWindow
+    let color: Color
+
+    private var tint: Color {
+        switch window.remainingPercent {
+        case ..<10: return .red
+        case ..<25: return .orange
+        default: return color
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            Text("\(Int(window.remainingPercent.rounded()))%")
+                .font(.callout.weight(.semibold).monospacedDigit())
+                .foregroundStyle(tint)
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.12))
+                    Capsule().fill(tint).frame(width: proxy.size.width * window.remainingPercent / 100)
+                }
+            }
+            .frame(width: 44, height: 4)
+            Text(window.shortTitle).font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(width: 48, alignment: .trailing)
     }
 }
 
@@ -243,9 +302,9 @@ enum LimitsSnapshot {
         _ = NSApplication.shared
         Task { @MainActor in
             let store = LimitsStore.shared
-            store.refresh(only: [.codex])
+            store.refresh()
             while store.isRefreshing { try? await Task.sleep(for: .milliseconds(100)) }
-            save(MenuBarPanel(store: store) {}, size: NSSize(width: 360, height: 330), to: directory.appendingPathComponent("menu.png"))
+            save(MenuBarPanel(store: store) {}, size: NSSize(width: 360, height: 400), to: directory.appendingPathComponent("menu.png"))
             save(PlanLimitsSection(store: store).padding(24).frame(width: 1040).background(Color(red: 0.045, green: 0.052, blue: 0.065)),
                  size: NSSize(width: 1040, height: 230), to: directory.appendingPathComponent("dashboard-limits.png"), dark: true)
             exit(0)

@@ -37,6 +37,15 @@ struct LimitWindow: Identifiable, Equatable, Sendable {
     var detail: String? = nil
 
     var remainingPercent: Double { max(0, min(100, 100 - usedPercent)) }
+
+    /// A word or two that fits under a gauge in the menu.
+    var shortTitle: String {
+        switch title {
+        case "5-hour": return "5 hour"
+        case "Weekly": return "week"
+        default: return title.count > 9 ? String(title.prefix(8)) + "…" : title
+        }
+    }
 }
 
 struct LimitAccount: Identifiable, Equatable, Sendable {
@@ -54,6 +63,16 @@ struct LimitAccount: Identifiable, Equatable, Sendable {
     var fetchedAt: Date = Date()
 
     var displayName: String { email ?? source }
+
+    /// The 5-hour and weekly limits for the menu, plus anything else that's nearly used up.
+    var glanceWindows: [LimitWindow] {
+        var picked = windows.filter { $0.title == "5-hour" || $0.title == "Weekly" }
+        if picked.isEmpty { picked = Array(windows.prefix(2)) }
+        if let tightest = tightestWindow, tightest.remainingPercent < 25, !picked.contains(tightest) {
+            picked.append(tightest)
+        }
+        return picked
+    }
 
     /// The window closest to running out, which is what the menu bar shows.
     var tightestWindow: LimitWindow? { windows.min { $0.remainingPercent < $1.remainingPercent } }
@@ -82,7 +101,9 @@ enum LimitFormat {
             "default_claude_max_20x": "Max 20x"
         ]
         if let name = names[raw.lowercased()] { return name }
-        return raw.replacingOccurrences(of: "_", with: " ").capitalized
+        var words = raw.lowercased().split(separator: "_").map(String.init)
+        if words.first == "claude", words.count > 1 { words.removeFirst() }
+        return words.joined(separator: " ").capitalized
     }
 
     static func resetText(_ date: Date?, now: Date = Date()) -> String {

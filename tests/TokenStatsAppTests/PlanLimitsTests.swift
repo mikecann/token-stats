@@ -79,6 +79,8 @@ final class PlanLimitsTests: XCTestCase {
         XCTAssertEqual(LimitFormat.windowTitle(minutes: 300), "5-hour")
         XCTAssertEqual(LimitFormat.windowTitle(minutes: 10080), "Weekly")
         XCTAssertEqual(LimitFormat.windowTitle(minutes: nil), "Usage")
+        XCTAssertEqual(LimitFormat.plan("claude_team"), "Team")
+        XCTAssertEqual(LimitFormat.plan("claude_enterprise"), "Enterprise")
         let now = Date(timeIntervalSince1970: 0)
         XCTAssertEqual(LimitFormat.resetText(Date(timeIntervalSince1970: 90 * 60), now: now), "resets in 1h 30m")
         XCTAssertEqual(LimitFormat.resetText(Date(timeIntervalSince1970: 20), now: now), "resets in 1m")
@@ -127,5 +129,22 @@ final class PlanLimitsTests: XCTestCase {
 
         XCTAssertEqual(merged.kept.map(\.id), ["b"])
         XCTAssertEqual(merged.duplicates.map(\.id), ["a"])
+    }
+
+    func testGlanceShowsFiveHourAndWeeklyPlusAnythingNearlyUsedUp() {
+        var account = LimitAccount(id: "c", provider: .claude, source: "~/.claude")
+        account.windows = [
+            LimitWindow(id: "s", title: "5-hour", usedPercent: 10, resetsAt: nil),
+            LimitWindow(id: "w", title: "Weekly", usedPercent: 20, resetsAt: nil),
+            LimitWindow(id: "f", title: "Weekly Fable", usedPercent: 5, resetsAt: nil)
+        ]
+        XCTAssertEqual(account.glanceWindows.map(\.id), ["s", "w"])
+
+        account.windows.append(LimitWindow(id: "a", title: "$250 allowance", usedPercent: 90, resetsAt: nil))
+        XCTAssertEqual(account.glanceWindows.map(\.id), ["s", "w", "a"])
+
+        var codex = LimitAccount(id: "x", provider: .codex, source: "~/.codex")
+        codex.windows = [LimitWindow(id: "p", title: "Weekly", usedPercent: 6, resetsAt: nil)]
+        XCTAssertEqual(codex.glanceWindows.map(\.shortTitle), ["week"])
     }
 }
