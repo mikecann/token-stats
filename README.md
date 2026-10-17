@@ -57,7 +57,7 @@ or all time, then switch between tokens and API-equivalent cost. Click a provide
 to show or hide it. The dashboard includes totals, cached input, active days, and
 model breakdowns. Use the export button for a 1400 x 900 PNG.
 
-The menu bar icon shows a gauge and the percentage left on whichever plan is closest to its limit. Click it for one line per account with what's left on its 5-hour and weekly limits. Everything else (every limit and when it resets, Add account, Open at login, CLI updates, Quit) is in the main window. Limits refresh every 5 minutes and whenever you open the menu or the window.
+The menu bar icon shows a gauge and the percentage left on whichever 5-hour or weekly limit is closest to running out. Dollar allowances and per-model limits don't count towards it. Click it for one line per account with what's left on its 5-hour and weekly limits. Everything else (every limit and when it resets, Add account, Open at login, CLI updates, Quit) is in the main window. Limits refresh every 5 minutes and whenever you open the menu or the window.
 
 ```bash
 token-stats          # Open the app, building it first if missing
@@ -85,7 +85,7 @@ The Codex index is cached in `~/Library/Application Support/Token Stats`.
 - **Codex:** Token Stats runs `codex app-server` and asks it for `account/rateLimits/read`, the same numbers Codex shows. Each account is its own `CODEX_HOME`, starting with `~/.codex`.
 - **Claude:** Token Stats reads Claude Code's saved login from the Keychain and asks Anthropic's usage endpoint, the one behind `/usage`. It reads the login through Apple's `security` tool, the same way Claude Code saves it, so there are no Keychain prompts. It shows the 5-hour and weekly limits, per-model weekly limits, dollar allowances and any extra usage spent.
 - **Grok:** Token Stats makes the same billing call as Grok Build's `/usage`, using the login in `~/.grok/auth.json`. That login only lasts a few hours, so if Grok hasn't been used in a while the card says to run `grok` once to refresh it.
-- **Muse:** not yet. The only place Muse's limits come from also creates a new API key each time, so it isn't safe to check every few minutes.
+- **Muse:** Muse only reports plan usage when it hands out an API key, which it does at the start of every Muse session. Token Stats asks the same way, at most once an hour, and throws the key away. It reads Muse's login from the Keychain (`ai.meta.dev.credentials`), so macOS asks once. If Muse has nothing to report yet, the card says so.
 - **Removing a login:** each card in the main window has a remove button. For logins Token Stats added, it signs that login out and deletes its folder. For your main logins it runs the tool's own logout (`claude auth logout`, `codex logout`, `grok logout`), and asks first.
 - **Grok** keeps one login per Mac, so **Add account → Grok** only works when it's signed out. Remove the current one first to switch.
 - **Duplicates:** two logins for the same email are the same plan, so they show as one card. If you add one that's already there, Token Stats signs that extra login out and removes its folder. It never touches `~/.claude` or `~/.codex`.

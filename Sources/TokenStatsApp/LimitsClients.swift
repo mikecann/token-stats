@@ -265,3 +265,88 @@ enum GrokLimitsClient {
         return json?["version"] as? String ?? "1.0.62"
     }()
 }
+
+/// Reads Muse's plan usage. Muse only reports it when it hands out an API key (which it does at
+/// the start of every Muse session), so this asks at most once an hour and throws the key away.
+enum MuseLimitsClient {
+    static let service = "ai.meta.dev.credentials"
+    static let interval: TimeInterval = 60 * 60
+    private static let cache = MuseCache()
+
+    static var authURL: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/muse/auth.json") }
+
+    static func fetch() async -> LimitAccount? {
+        guard let data = try? Data(contentsOf: authURL),
+              let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let meta = (saved["providers"] as? [String: Any])?["meta"] as? [String: Any] else { return nil }
+        if let cached = await cache.fresh(within: interval) { return cached }
+
+        var account = LimitAccount(id: "muse:meta", provider: .muse, email: meta["user_email"] as? String, source: "~/.config/muse")
+        guard let token = readToken() else {
+            account.error = "Couldn't read Muse's login from the Keychain"
+            return account
+        }
+        do {
+            let response = try await mint(token: token)
+            MuseLimitsParser.apply(response, to: &account)
+        } catch {
+            account.error = error.localizedDescription
+        }
+        await cache.store(account)
+        return account
+    }
+
+    private static func mint(token: String) async throws -> [String: Any] {
+        var lastStatus = 0
+        for method in ["POST", "GET"] {
+            var request = URLRequest(url: URL(string: "https://api.meta.ai/muse-code/key")!, timeoutInterval: 20)
+            request.httpMethod = method
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            if method == "POST" {
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = Data("{}".utf8)
+            }
+            let (body, response) = try await URLSession.shared.data(for: request)
+            lastStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+            if ProcessInfo.processInfo.environment["TOKEN_STATS_DEBUG"] == "1" {
+                // Never print the minted key itself.
+                let shape = json.map { MuseLimitsParser.redacted($0) } ?? ["body": String(decoding: body.prefix(300), as: UTF8.self)]
+                let text = (try? JSONSerialization.data(withJSONObject: shape, options: [.sortedKeys])).map { String(decoding: $0, as: UTF8.self) } ?? ""
+                print("muse \(method) HTTP \(lastStatus): \(text)")
+            }
+            if (200..<300).contains(lastStatus), let json { return json }
+            if lastStatus != 404 && lastStatus != 405 { break }
+        }
+        throw LimitsError("Meta returned HTTP \(lastStatus)")
+    }
+
+    /// The Keychain item may be a bare token or JSON holding one.
+    private static func readToken() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnData as String: true
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
+        if let json = try? JSONSerialization.jsonObject(with: data) {
+            return MuseLimitsParser.accessToken(in: json)
+        }
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+}
+
+actor MuseCache {
+    private var account: LimitAccount?
+
+    func fresh(within interval: TimeInterval) -> LimitAccount? {
+        guard let account, account.error == nil, Date().timeIntervalSince(account.fetchedAt) < interval else { return nil }
+        return account
+    }
+
+    func store(_ account: LimitAccount) { self.account = account }
+}

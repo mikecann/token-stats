@@ -81,6 +81,7 @@ final class PlanLimitsTests: XCTestCase {
         XCTAssertEqual(LimitFormat.windowTitle(minutes: nil), "Usage")
         XCTAssertEqual(LimitFormat.plan("claude_team"), "Team")
         XCTAssertEqual(LimitFormat.plan("claude_enterprise"), "Enterprise")
+        XCTAssertEqual(LimitFormat.plan("Muse Code Power Usage"), "Power Usage")
         let now = Date(timeIntervalSince1970: 0)
         XCTAssertEqual(LimitFormat.resetText(Date(timeIntervalSince1970: 90 * 60), now: now), "resets in 1h 30m")
         XCTAssertEqual(LimitFormat.resetText(Date(timeIntervalSince1970: 20), now: now), "resets in 1m")
@@ -164,5 +165,36 @@ final class PlanLimitsTests: XCTestCase {
         var used = LimitAccount(id: "g", provider: .grok, source: "~/.grok")
         GrokLimitsParser.apply(try json(#"{"config":{"creditUsagePercent":37.5,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY"}}}"#), to: &used)
         XCTAssertEqual(used.windows[0].usedPercent, 37.5)
+    }
+
+    func testMenuBarIgnoresDollarAllowances() {
+        var account = LimitAccount(id: "c", provider: .claude, source: "~/.claude")
+        account.windows = [
+            LimitWindow(id: "s", title: "5-hour", usedPercent: 6, resetsAt: nil),
+            LimitWindow(id: "w", title: "Weekly", usedPercent: 21, resetsAt: nil),
+            LimitWindow(id: "a", title: "$250 allowance", usedPercent: 47, resetsAt: nil)
+        ]
+        XCTAssertEqual(account.tightestWindow?.id, "w")
+    }
+
+    func testMuseParserReadsSubsUsageAndCopesWithoutIt() {
+        var account = LimitAccount(id: "m", provider: .muse, source: "~/.config/muse")
+        MuseLimitsParser.apply([
+            "subs_tier_name": "Muse Code Power Usage",
+            "subs_usage": [
+                "window": ["used_percent": 30, "window_duration_mins": 300, "resets_at": 1792650106],
+                "weekly": ["used_percent": 12, "resets_at": 1792900000]
+            ]
+        ], to: &account)
+        XCTAssertEqual(account.plan, "Power Usage")
+        XCTAssertEqual(account.windows.map(\.title), ["5-hour", "Weekly"])
+        XCTAssertEqual(account.windows[0].remainingPercent, 70)
+
+        var empty = LimitAccount(id: "m", provider: .muse, source: "~/.config/muse")
+        MuseLimitsParser.apply(["is_subs_active": true, "api_key": "x"], to: &empty)
+        XCTAssertTrue(empty.windows.isEmpty)
+        XCTAssertEqual(empty.notes.count, 1)
+        XCTAssertEqual(MuseLimitsParser.redacted(["api_key": "secret", "a": ["access_token": "t"]]) as? NSDictionary,
+                       ["api_key": "<redacted>", "a": ["access_token": "<redacted>"]] as NSDictionary)
     }
 }

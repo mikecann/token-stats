@@ -288,7 +288,10 @@ final class LimitsStore: ObservableObject {
 /// Readers for agents with a single login each.
 enum OtherAgentLimits {
     static var fetchers: [(provider: LimitProvider, fetch: @Sendable () async -> [LimitAccount])] {
-        [(.grok, { await GrokLimitsClient.fetch().map { [$0] } ?? [] })]
+        [
+            (.grok, { await GrokLimitsClient.fetch().map { [$0] } ?? [] }),
+            (.muse, { await MuseLimitsClient.fetch().map { [$0] } ?? [] })
+        ]
     }
 }
 
@@ -310,9 +313,9 @@ enum LimitsCommand {
         Task { @MainActor in
             let store = LimitsStore.shared
             store.refresh(only: only.isEmpty ? nil : Set(only))
-            let deadline = Date().addingTimeInterval(45)
+            let deadline = Date().addingTimeInterval(60)
             while store.isRefreshing, Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
-            if store.isRefreshing { print("(Some accounts didn't answer within 45s. A Keychain prompt may be waiting.)") }
+            if store.isRefreshing { print("(Some accounts didn't answer within 60s. A Keychain prompt may be waiting.)") }
             for account in store.accounts {
                 print("\(account.provider.rawValue) \(account.plan ?? "") \(account.displayName) [\(account.source)]")
                 if let error = account.error { print("  ! \(error)") }

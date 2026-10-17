@@ -66,16 +66,23 @@ struct LimitAccount: Identifiable, Equatable, Sendable {
 
     /// The 5-hour and weekly limits for the menu, plus anything else that's nearly used up.
     var glanceWindows: [LimitWindow] {
-        var picked = windows.filter { $0.title == "5-hour" || $0.title == "Weekly" }
-        if picked.isEmpty { picked = Array(windows.prefix(2)) }
-        if let tightest = tightestWindow, tightest.remainingPercent < 25, !picked.contains(tightest) {
-            picked.append(tightest)
+        var picked = mainWindows
+        if let nearlyGone = windows.filter({ !picked.contains($0) }).min(by: { $0.remainingPercent < $1.remainingPercent }),
+           nearlyGone.remainingPercent < 25 {
+            picked.append(nearlyGone)
         }
         return picked
     }
 
-    /// The window closest to running out, which is what the menu bar shows.
-    var tightestWindow: LimitWindow? { windows.min { $0.remainingPercent < $1.remainingPercent } }
+    /// The main rate limits: 5-hour and weekly, or whatever single limit the plan has.
+    /// Dollar allowances and per-model limits aren't counted here.
+    var mainWindows: [LimitWindow] {
+        let main = windows.filter { $0.title == "5-hour" || $0.title == "Weekly" }
+        return main.isEmpty ? Array(windows.prefix(1)) : main
+    }
+
+    /// The main limit closest to running out, which is what the menu bar shows.
+    var tightestWindow: LimitWindow? { mainWindows.min { $0.remainingPercent < $1.remainingPercent } }
 }
 
 enum LimitFormat {
@@ -101,8 +108,9 @@ enum LimitFormat {
             "default_claude_max_20x": "Max 20x"
         ]
         if let name = names[raw.lowercased()] { return name }
-        var words = raw.lowercased().split(separator: "_").map(String.init)
+        var words = raw.lowercased().split(whereSeparator: { $0 == "_" || $0 == " " }).map(String.init)
         if words.first == "claude", words.count > 1 { words.removeFirst() }
+        if words.starts(with: ["muse", "code"]), words.count > 2 { words.removeFirst(2) }
         return words.joined(separator: " ").capitalized
     }
 
@@ -313,5 +321,50 @@ enum GrokLimitsParser {
         if let onDemand = CodexLimitsParser.number((config["onDemandUsed"] as? [String: Any])?["val"]), onDemand > 0 {
             target.notes.append("\(Int(onDemand)) on-demand credits used")
         }
+    }
+}
+
+/// Reads the `subs_usage` part of Muse's key response.
+enum MuseLimitsParser {
+    static func apply(_ response: [String: Any], to target: inout LimitAccount) {
+        let usage = response["subs_usage"] as? [String: Any] ?? response["usage"] as? [String: Any] ?? [:]
+        target.plan = LimitFormat.plan(response["subs_tier_name"] as? String ?? usage["tier"] as? String)
+        var windows: [LimitWindow] = []
+        if let window = usage["window"] as? [String: Any], let used = CodexLimitsParser.number(window["used_percent"] ?? window["usedPercent"]) {
+            let minutes = CodexLimitsParser.number(window["window_duration_mins"] ?? window["windowDurationMins"]).map { Int($0) }
+            windows.append(LimitWindow(id: "window", title: LimitFormat.windowTitle(minutes: minutes ?? 300), usedPercent: used,
+                                       resetsAt: LimitFormat.isoDate(window["resets_at"] ?? window["resetsAtMs"])))
+        }
+        if let weekly = usage["weekly"] as? [String: Any], let used = CodexLimitsParser.number(weekly["used_percent"] ?? weekly["usedPercent"]) {
+            windows.append(LimitWindow(id: "weekly", title: "Weekly", usedPercent: used,
+                                       resetsAt: LimitFormat.isoDate(weekly["resets_at"] ?? weekly["resetsAtMs"])))
+        }
+        target.windows = windows
+        if windows.isEmpty {
+            target.notes.append(response["is_subs_active"] as? Bool == false
+                ? "No active Muse subscription"
+                : "Muse didn't report usage this time. It usually does once you've used it in the current window.")
+        }
+    }
+
+    static func accessToken(in json: Any) -> String? {
+        if let object = json as? [String: Any] {
+            for key in ["access_token", "accessToken"] { if let token = object[key] as? String, !token.isEmpty { return token } }
+            for value in object.values { if let token = accessToken(in: value) { return token } }
+        }
+        if let array = json as? [Any] { for value in array { if let token = accessToken(in: value) { return token } } }
+        return nil
+    }
+
+    /// The response's shape with every secret-looking value blanked, for debugging.
+    static func redacted(_ value: Any) -> Any {
+        if let object = value as? [String: Any] {
+            return Dictionary(uniqueKeysWithValues: object.map { key, inner in
+                let secret = key.lowercased().contains("key") || key.lowercased().contains("token") || key.lowercased().contains("secret")
+                return (key, secret ? "<redacted>" as Any : redacted(inner))
+            })
+        }
+        if let array = value as? [Any] { return array.map(redacted) }
+        return value
     }
 }
