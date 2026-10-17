@@ -86,9 +86,9 @@ final class LimitsStore: ObservableObject {
     /// Opens Terminal on a login command that saves the new account in its own folder.
     func addAccount(_ provider: LimitProvider) {
         let number = (1...99).first { !fileManager.fileExists(atPath: folder(provider, $0).path) } ?? 99
-        let folder = folder(provider, number)
-        try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-        let quoted = "'\(folder.path.replacingOccurrences(of: "'", with: "'\\''"))'"
+        let loginFolder = folder(provider, number)
+        try? fileManager.createDirectory(at: loginFolder, withIntermediateDirectories: true)
+        let quoted = "'\(loginFolder.path.replacingOccurrences(of: "'", with: "'\\''"))'"
         let command: String
         switch provider {
         case .codex:
@@ -104,7 +104,7 @@ final class LimitsStore: ObservableObject {
         default:
             return
         }
-        let script = folder.appendingPathComponent("sign-in.command")
+        let script = loginFolder.appendingPathComponent("sign-in.command")
         let body = """
         #!/bin/zsh -l
         \(command)
