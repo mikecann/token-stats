@@ -34,6 +34,7 @@ struct LimitWindow: Identifiable, Equatable, Sendable {
     let title: String
     let usedPercent: Double
     let resetsAt: Date?
+    var detail: String? = nil
 
     var remainingPercent: Double { max(0, min(100, 100 - usedPercent)) }
 }
@@ -45,6 +46,8 @@ struct LimitAccount: Identifiable, Equatable, Sendable {
     var plan: String?
     /// Where the login lives, e.g. `~/.codex`.
     var source: String
+    /// The login folder Token Stats made for this account, if it made one.
+    var folder: URL? = nil
     var windows: [LimitWindow] = []
     var notes: [String] = []
     var error: String?
@@ -163,18 +166,63 @@ enum ClaudeLimitsParser {
     private static let order = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_oauth_apps"]
     private static let titles = [
         "five_hour": "5-hour", "seven_day": "Weekly", "seven_day_opus": "Weekly Opus",
-        "seven_day_sonnet": "Weekly Sonnet", "seven_day_oauth_apps": "Weekly apps", "extra_usage": "Extra usage"
+        "seven_day_sonnet": "Weekly Sonnet", "seven_day_oauth_apps": "Weekly apps"
     ]
 
     static func windows(from usage: [String: Any]) -> [LimitWindow] {
-        let keys = usage.keys.sorted { (order.firstIndex(of: $0) ?? 99, $0) < (order.firstIndex(of: $1) ?? 99, $1) }
-        return keys.compactMap { key in
-            guard let window = usage[key] as? [String: Any],
-                  let used = CodexLimitsParser.number(window["utilization"]) else { return nil }
-            if window["is_enabled"] as? Bool == false { return nil }
-            let title = titles[key] ?? key.replacingOccurrences(of: "_", with: " ").capitalized
-            return LimitWindow(id: key, title: title, usedPercent: used, resetsAt: LimitFormat.isoDate(window["resets_at"]))
+        var windows: [LimitWindow] = []
+        if let limits = usage["limits"] as? [[String: Any]], !limits.isEmpty {
+            // Newer responses list every limit with its kind and what it's scoped to.
+            for (index, limit) in limits.enumerated() {
+                guard let used = CodexLimitsParser.number(limit["percent"]) else { continue }
+                let kind = limit["kind"] as? String ?? "limit"
+                windows.append(LimitWindow(
+                    id: "limits.\(index).\(kind)", title: title(kind: kind, scope: limit["scope"] as? [String: Any]),
+                    usedPercent: used, resetsAt: LimitFormat.isoDate(limit["resets_at"])
+                ))
+            }
+        } else {
+            let keys = usage.keys.filter { titles[$0] != nil }.sorted { (order.firstIndex(of: $0) ?? 99) < (order.firstIndex(of: $1) ?? 99) }
+            for key in keys {
+                guard let window = usage[key] as? [String: Any], let used = CodexLimitsParser.number(window["utilization"]) else { continue }
+                windows.append(LimitWindow(id: key, title: titles[key]!, usedPercent: used, resetsAt: LimitFormat.isoDate(window["resets_at"])))
+            }
         }
+        // Dollar allowances turn up under code names, so they're spotted by their shape.
+        for key in usage.keys.sorted() {
+            guard let window = usage[key] as? [String: Any],
+                  let limit = CodexLimitsParser.number(window["limit_dollars"]),
+                  let used = CodexLimitsParser.number(window["utilization"]) else { continue }
+            let remaining = CodexLimitsParser.number(window["remaining_dollars"])
+            windows.append(LimitWindow(
+                id: key, title: "\(dollars(limit)) allowance", usedPercent: used,
+                resetsAt: LimitFormat.isoDate(window["resets_at"]),
+                detail: remaining.map { "\(dollars($0)) left" }
+            ))
+        }
+        return windows
+    }
+
+    static func notes(from usage: [String: Any]) -> [String] {
+        guard let spend = usage["spend"] as? [String: Any], spend["enabled"] as? Bool == true,
+              let used = spend["used"] as? [String: Any], let minor = CodexLimitsParser.number(used["amount_minor"]), minor > 0 else { return [] }
+        let exponent = CodexLimitsParser.number(used["exponent"]) ?? 2
+        return ["\(dollars(minor / pow(10, exponent))) extra usage spent"]
+    }
+
+    private static func title(kind: String, scope: [String: Any]?) -> String {
+        let base: String
+        switch kind {
+        case "session": base = "5-hour"
+        case "weekly_all", "weekly_scoped", "weekly": base = "Weekly"
+        default: base = kind.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+        let names = ["model", "surface"].compactMap { (scope?[$0] as? [String: Any])?["display_name"] as? String }
+        return ([base] + names).joined(separator: " ")
+    }
+
+    private static func dollars(_ value: Double) -> String {
+        value == value.rounded() ? "$\(Int(value))" : String(format: "$%.2f", value)
     }
 
     static func apply(profile: [String: Any], to target: inout LimitAccount) {
@@ -185,5 +233,36 @@ enum ClaudeLimitsParser {
            let type = organization["organization_type"] as? String ?? organization["rate_limit_tier"] as? String {
             target.plan = LimitFormat.plan(type) ?? target.plan
         }
+    }
+}
+
+/// One card per real account: logins for the same email are the same plan.
+enum LimitAccountMerger {
+    /// Keeps the login you set up yourself (`~/.claude`, `~/.codex`), then ones Token Stats made,
+    /// and returns the extra logins so they can be tidied away.
+    static func merge(_ accounts: [LimitAccount]) -> (kept: [LimitAccount], duplicates: [LimitAccount]) {
+        var kept: [LimitAccount] = []
+        var duplicates: [LimitAccount] = []
+        let ordered = accounts.sorted { rank($0) < rank($1) }
+        for account in ordered {
+            guard let email = account.email?.lowercased(),
+                  let index = kept.firstIndex(where: { $0.provider == account.provider && $0.email?.lowercased() == email }) else {
+                kept.append(account)
+                continue
+            }
+            // A login that's working beats one that errored.
+            if kept[index].error != nil, account.error == nil {
+                duplicates.append(kept[index])
+                kept[index] = account
+            } else {
+                duplicates.append(account)
+            }
+        }
+        return (kept, duplicates)
+    }
+
+    private static func rank(_ account: LimitAccount) -> (Int, String) {
+        let tier = account.source.hasPrefix("~/") ? 0 : account.folder != nil ? 1 : 2
+        return (tier, account.source)
     }
 }

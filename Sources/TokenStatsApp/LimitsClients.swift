@@ -5,8 +5,8 @@ import Security
 /// Asks `codex app-server` for the signed-in account and its rate limits.
 /// Each account is a separate `CODEX_HOME`, so this works for any number of logins.
 enum CodexLimitsClient {
-    static func fetch(home: URL, label: String) async -> LimitAccount {
-        var account = LimitAccount(id: "codex:\(home.path)", provider: .codex, source: label)
+    static func fetch(home: URL, label: String, folder: URL?) async -> LimitAccount {
+        var account = LimitAccount(id: "codex:\(home.path)", provider: .codex, source: label, folder: folder)
         guard let executable = CommandLocator.find("codex") else {
             account.error = "Couldn't find the codex command"
             return account
@@ -61,8 +61,8 @@ enum ClaudeLimitsClient {
         return Array(Set(services)).sorted()
     }
 
-    static func fetch(service: String, label: String) async -> LimitAccount {
-        var account = LimitAccount(id: "claude:\(service)", provider: .claude, source: label)
+    static func fetch(service: String, label: String, folder: URL?) async -> LimitAccount {
+        var account = LimitAccount(id: "claude:\(service)", provider: .claude, source: label, folder: folder)
         guard let oauth = readOAuth(service: service), let token = oauth["accessToken"] as? String else {
             account.error = "Couldn't read this Claude login from the Keychain"
             return account
@@ -75,7 +75,13 @@ enum ClaudeLimitsClient {
         do {
             async let usage = get("https://api.anthropic.com/api/oauth/usage", token: token)
             async let profile = try? get("https://api.anthropic.com/api/oauth/profile", token: token)
-            account.windows = ClaudeLimitsParser.windows(from: try await usage)
+            let usageJSON = try await usage
+            if ProcessInfo.processInfo.environment["TOKEN_STATS_DEBUG"] == "1",
+               let data = try? JSONSerialization.data(withJSONObject: usageJSON, options: [.prettyPrinted, .sortedKeys]) {
+                print(String(decoding: data, as: UTF8.self))
+            }
+            account.windows = ClaudeLimitsParser.windows(from: usageJSON)
+            account.notes = ClaudeLimitsParser.notes(from: usageJSON)
             if let profile = await profile { ClaudeLimitsParser.apply(profile: profile, to: &account) }
         } catch {
             account.error = error.localizedDescription
@@ -91,16 +97,13 @@ enum ClaudeLimitsClient {
         return version.first?.isNumber == true ? version : "2.1.0"
     }()
 
+    /// Claude Code writes its login with Apple's `security` tool, so that tool is the one the
+    /// Keychain trusts to read it back. Going through it means no "allow access" prompts, even
+    /// after Claude Code rewrites the item when it refreshes the login.
     private static func readOAuth(service: String) -> [String: Any]? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecReturnData as String: true
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data,
-              let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let result = ProcessRunner.run(["/usr/bin/security", "find-generic-password", "-s", service, "-w"], timeout: 15)
+        guard result.status == 0,
+              let saved = try? JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any] else { return nil }
         return saved["claudeAiOauth"] as? [String: Any]
     }
 

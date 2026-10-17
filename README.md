@@ -81,8 +81,9 @@ The Codex index is cached in `~/Library/Application Support/Token Stats`.
 ## Plan limits
 
 - **Codex:** Token Stats runs `codex app-server` and asks it for `account/rateLimits/read`, the same numbers Codex shows. Each account is its own `CODEX_HOME`, starting with `~/.codex`.
-- **Claude:** Token Stats reads Claude Code's saved login from the Keychain and asks Anthropic's usage endpoint, the one behind `/usage`. The first time, macOS asks whether Token Stats can use `Claude Code-credentials`. Choose **Always Allow**. `build-app.sh` signs with your Apple Development certificate when there is one, so the answer sticks across rebuilds. With ad hoc signing it asks again after every rebuild.
-- **More accounts:** choose **Add account** in the menu. Token Stats makes a folder for the login under `~/Library/Application Support/Token Stats/Accounts` and opens Terminal on `codex login` or `claude auth login` pointed at it. Switch accounts in the browser first if it picks the wrong one. To use that account yourself, run `CODEX_HOME=<folder> codex` or `CLAUDE_CONFIG_DIR=<folder> claude`.
+- **Claude:** Token Stats reads Claude Code's saved login from the Keychain and asks Anthropic's usage endpoint, the one behind `/usage`. It reads the login through Apple's `security` tool, the same way Claude Code saves it, so there are no Keychain prompts. It shows the 5-hour and weekly limits, per-model weekly limits, dollar allowances and any extra usage spent.
+- **Duplicates:** two logins for the same email are the same plan, so they show as one card. If you add one that's already there, Token Stats signs that extra login out and removes its folder. It never touches `~/.claude` or `~/.codex`.
+- **More accounts:** choose **Add account** in the menu. Token Stats makes a folder for the login under `~/Library/Application Support/Token Stats/Accounts` and opens Terminal on `codex login` or `claude auth login` pointed at it. Switch accounts in the browser first if it picks the wrong one. The new account shows up by itself a few seconds after you finish signing in. To use that account yourself, run `CODEX_HOME=<folder> codex` or `CLAUDE_CONFIG_DIR=<folder> claude`.
 - An expired Claude login shows a warning until you run `claude` with that account again. Token Stats never refreshes or rewrites anyone's login.
 
 ## Keeping the CLIs updated

@@ -40,6 +40,9 @@ struct MenuBarPanel: View {
                     .help("Refresh limits")
             }
 
+            if let notice = store.notice {
+                Label(notice, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
+            }
             if store.accounts.isEmpty {
                 Text(store.isRefreshing ? "Checking your plans…" : "No signed-in plans found.")
                     .foregroundStyle(.secondary)
@@ -184,8 +187,9 @@ struct LimitBar: View {
                 }
             }
             .frame(height: compact ? 5 : 7)
-            if window.resetsAt != nil {
-                Text(LimitFormat.resetText(window.resetsAt))
+            let footer = [window.detail, window.resetsAt.map { LimitFormat.resetText($0) }].compactMap { $0 }
+            if !footer.isEmpty {
+                Text(footer.joined(separator: " · "))
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }
@@ -212,6 +216,9 @@ struct PlanLimitsSection: View {
                 .buttonStyle(.bordered)
                 .help("Refresh limits")
             }
+            if let notice = store.notice {
+                Label(notice, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
+            }
             if store.accounts.isEmpty {
                 Text(store.isRefreshing ? "Checking your plans…" : "No signed-in plans found.").foregroundStyle(.secondary)
             } else {
@@ -221,6 +228,7 @@ struct PlanLimitsSection: View {
             }
         }
         .task { store.start() }
+        .onAppear { store.refreshIfStale() }
     }
 }
 
