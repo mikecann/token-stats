@@ -43,5 +43,8 @@ if [[ -f "$ICON_SOURCE" ]]; then
   rm -rf "$(dirname "$ICONSET")"
 fi
 
-codesign --force --deep --timestamp=none --sign - "$APP_DIR" >/dev/null
+# A real signing identity keeps the app's identity stable across rebuilds, so macOS
+# remembers "Always Allow" for the Claude Code Keychain item. Falls back to ad hoc.
+SIGN_IDENTITY="${TOKEN_STATS_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: .*\)"/\1/p' | head -1)}"
+codesign --force --deep --timestamp=none --sign "${SIGN_IDENTITY:--}" "$APP_DIR" >/dev/null
 echo "Built $APP_DIR"

@@ -37,6 +37,21 @@ requires macOS 14 or later, and is a self-contained Swift package.
   Exact OpenRouter billed usage wins over estimates; don't add BYOK estimates.
 - Keep the existing bundle ID, Keychain service, preferences keys, and cache
   location compatible with existing installations.
+- Plan limits: `PlanLimits.swift` holds the models and pure parsers (tested),
+  `LimitsClients.swift` talks to `codex app-server` (JSON-RPC over stdio) and
+  Anthropic's OAuth usage endpoint using Claude Code's Keychain login (read
+  via `/usr/bin/security`, which Claude Code writes with, so there's no
+  prompt; never read it with SecItem APIs), and
+  `LimitsStore.swift` discovers accounts, refreshes every 5 minutes and backs
+  both the menu bar (`LimitsViews.swift`) and the dashboard section. Only read
+  logins; never refresh, rewrite or log tokens. `LimitAccountMerger` shows one
+  card per email and removes duplicate logins Token Stats made itself. `token-stats limits` prints
+  the same data for checking without the UI.
+- `CLIUpdater.swift` updates the agent CLIs once a day (checked hourly) and
+  `token-stats update-clis` runs it by hand. Keep the updates sequential and
+  never start an agent session to update one (Muse uses `MUSE_LAUNCHER_INSTALL=1`).
+- The app is a `MenuBarExtra` plus one `Window`. Closing the window drops it to
+  an accessory app; it only quits from the menu's Quit button.
 - `DashboardSnapshot.swift` and `UsageAggregator.swift` build daily summaries;
   `DashboardView.swift` renders the app and PNG export.
 
