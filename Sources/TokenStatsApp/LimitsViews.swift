@@ -182,6 +182,9 @@ private struct GlanceGauge: View {
 struct LimitAccountCard: View {
     let account: LimitAccount
     var compact = false
+    var removalWarning = ""
+    var onRemove: (() -> Void)?
+    @State private var confirmingRemoval = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 7 : 10) {
@@ -200,6 +203,12 @@ struct LimitAccountCard: View {
                 Text(account.displayName)
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
+                if onRemove != nil {
+                    Button { confirmingRemoval = true } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
+                        .help("Remove this login")
+                }
             }
             if let error = account.error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -211,6 +220,12 @@ struct LimitAccountCard: View {
                 Text(account.notes.joined(separator: " · "))
                     .font(.caption2).foregroundStyle(.secondary)
             }
+        }
+        .alert("Remove \(account.displayName)?", isPresented: $confirmingRemoval) {
+            Button("Remove", role: .destructive) { onRemove?() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(removalWarning)
         }
         .padding(compact ? 10 : 16)
         .background(
@@ -271,8 +286,15 @@ struct PlanLimitsSection: View {
                 Menu("Add account") {
                     Button("Codex account…") { store.addAccount(.codex) }
                     Button("Claude account…") { store.addAccount(.claude) }
+                    if store.grokSignedIn {
+                        Button("Grok: one login only, remove the current one first") {}
+                            .disabled(true)
+                    } else {
+                        Button("Grok account…") { store.addAccount(.grok) }
+                    }
                 }
                 .fixedSize()
+                .help("Codex and Claude can have several logins. Grok keeps one per Mac.")
                 Button { store.refresh() } label: {
                     if store.isRefreshing { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") }
                 }
@@ -286,7 +308,13 @@ struct PlanLimitsSection: View {
                 Text(store.isRefreshing ? "Checking your plans…" : "No signed-in plans found.").foregroundStyle(.secondary)
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 14, alignment: .top)], spacing: 14) {
-                    ForEach(store.accounts) { LimitAccountCard(account: $0) }
+                    ForEach(store.accounts) { account in
+                        LimitAccountCard(
+                            account: account,
+                            removalWarning: store.removalWarning(for: account),
+                            onRemove: { store.removeLogin(account) }
+                        )
+                    }
                 }
             }
             LimitsSettingsBar(store: store)

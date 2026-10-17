@@ -90,6 +90,10 @@ final class LimitsStore: ObservableObject {
 
     /// Opens Terminal on a login command that saves the new account in its own folder.
     func addAccount(_ provider: LimitProvider) {
+        if provider == .grok {
+            signInToGrok()
+            return
+        }
         let number = (1...99).first { !fileManager.fileExists(atPath: folder(provider, $0).path) } ?? 99
         let loginFolder = folder(provider, number)
         try? fileManager.createDirectory(at: loginFolder, withIntermediateDirectories: true)
@@ -123,6 +127,79 @@ final class LimitsStore: ObservableObject {
         watchForSignIn(provider, folder: loginFolder)
     }
 
+    /// Grok keeps a single login in `~/.grok`, so adding one only works when none is there.
+    var grokSignedIn: Bool { fileManager.fileExists(atPath: GrokLimitsClient.authURL.path) }
+
+    private func signInToGrok() {
+        guard !grokSignedIn else { return }
+        try? fileManager.createDirectory(at: accountsDirectory, withIntermediateDirectories: true)
+        let script = accountsDirectory.appendingPathComponent("grok-sign-in.command")
+        let body = """
+        #!/bin/zsh -l
+        echo "Sign in with the Grok account you want to see in Token Stats."
+        grok login
+        echo
+        echo "Done. Token Stats will show it in a few seconds. You can close this window."
+        """
+        try? body.write(to: script, atomically: true, encoding: .utf8)
+        try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        NSWorkspace.shared.open(script)
+        notice = nil
+        watchForSignIn(.grok, folder: accountsDirectory)
+    }
+
+    /// What removing this login will do, for the confirmation before it happens.
+    func removalWarning(for account: LimitAccount) -> String {
+        if account.folder != nil {
+            return "Token Stats signs out this login and deletes the folder it made for it."
+        }
+        switch account.provider {
+        case .claude: return "This signs Claude Code out on this Mac (claude auth logout). You'll need to sign in again to use it."
+        case .codex: return "This signs Codex out on this Mac (codex logout). You'll need to sign in again to use it."
+        case .grok: return "This signs Grok out on this Mac (grok logout). You'll need to sign in again to use it."
+        case .muse: return "This signs Muse out on this Mac (muse logout). You'll need to sign in again to use it."
+        }
+    }
+
+    func removeLogin(_ account: LimitAccount) {
+        accounts.removeAll { $0.id == account.id }
+        let accountsDirectory = accountsDirectory
+        Task {
+            await Task.detached {
+                Self.signOut(account, accountsDirectory: accountsDirectory)
+            }.value
+            notice = "Removed \(account.displayName)."
+            refresh()
+        }
+    }
+
+    nonisolated private static func signOut(_ account: LimitAccount, accountsDirectory: URL) {
+        let ownFolder = account.folder.flatMap {
+            $0.deletingLastPathComponent().standardizedFileURL == accountsDirectory.standardizedFileURL ? $0 : nil
+        }
+        switch account.provider {
+        case .claude:
+            if ownFolder != nil, account.id.hasPrefix("claude:") {
+                let service = String(account.id.dropFirst("claude:".count))
+                _ = ProcessRunner.run(["/usr/bin/security", "delete-generic-password", "-s", service], timeout: 15)
+            } else if let claude = CommandLocator.find("claude") {
+                _ = ProcessRunner.run([claude.path, "auth", "logout"], timeout: 60)
+            }
+        case .codex:
+            if let codex = CommandLocator.find("codex") {
+                let environment = ownFolder.map { ["CODEX_HOME": $0.path] } ?? [:]
+                _ = ProcessRunner.run([codex.path, "logout"], environment: environment, timeout: 60)
+            }
+        case .grok:
+            if let grok = CommandLocator.find("grok") { _ = ProcessRunner.run([grok.path, "logout"], timeout: 60) }
+        case .muse:
+            if let muse = CommandLocator.find("muse") {
+                _ = ProcessRunner.run([muse.path, "logout"], environment: ["MUSE_NO_AUTO_UPDATE": "1"], timeout: 60)
+            }
+        }
+        if let ownFolder { try? FileManager.default.removeItem(at: ownFolder) }
+    }
+
     /// Refreshes by itself as soon as the new login lands, so there's nothing to click.
     private func watchForSignIn(_ provider: LimitProvider, folder: URL) {
         signInWatcher?.cancel()
@@ -134,6 +211,8 @@ final class LimitsStore: ObservableObject {
                 switch provider {
                 case .codex:
                     signedIn = fileManager.fileExists(atPath: folder.appendingPathComponent("auth.json").path)
+                case .grok:
+                    signedIn = grokSignedIn
                 default:
                     let service = ClaudeLimitsClient.serviceName(configDir: folder)
                     signedIn = await Task.detached { ClaudeLimitsClient.savedServices().contains(service) }.value
