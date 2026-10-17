@@ -147,4 +147,22 @@ final class PlanLimitsTests: XCTestCase {
         codex.windows = [LimitWindow(id: "p", title: "Weekly", usedPercent: 6, resetsAt: nil)]
         XCTAssertEqual(codex.glanceWindows.map(\.shortTitle), ["week"])
     }
+
+    func testGrokParserTreatsMissingPercentAsNothingUsed() throws {
+        let billing = try json(#"""
+        {"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-10-14T06:53:23.471544+00:00","end":"2026-10-21T06:53:23.471544+00:00"},
+          "onDemandCap":{"val":0},"onDemandUsed":{"val":0},"isUnifiedBillingUser":true}}
+        """#)
+        var account = LimitAccount(id: "g", provider: .grok, source: "~/.grok")
+
+        GrokLimitsParser.apply(billing, to: &account)
+
+        XCTAssertEqual(account.windows.map(\.title), ["Weekly"])
+        XCTAssertEqual(account.windows[0].remainingPercent, 100)
+        XCTAssertEqual(account.windows[0].resetsAt, ISO8601DateFormatter().date(from: "2026-10-21T06:53:23Z"))
+
+        var used = LimitAccount(id: "g", provider: .grok, source: "~/.grok")
+        GrokLimitsParser.apply(try json(#"{"config":{"creditUsagePercent":37.5,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY"}}}"#), to: &used)
+        XCTAssertEqual(used.windows[0].usedPercent, 37.5)
+    }
 }

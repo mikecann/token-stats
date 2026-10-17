@@ -65,7 +65,7 @@ final class LimitsStore: ObservableObject {
                     }
                 }
                 for fetch in others {
-                    group.addTask { [await fetch()] }
+                    group.addTask { await fetch() }
                 }
                 for await batch in group {
                     batch.forEach { fresh[$0.id] = $0 }
@@ -206,9 +206,11 @@ final class LimitsStore: ObservableObject {
     }
 }
 
-/// Grok and Muse readers plug in here.
+/// Readers for agents with a single login each.
 enum OtherAgentLimits {
-    static var fetchers: [(provider: LimitProvider, fetch: @Sendable () async -> LimitAccount)] { [] }
+    static var fetchers: [(provider: LimitProvider, fetch: @Sendable () async -> [LimitAccount])] {
+        [(.grok, { await GrokLimitsClient.fetch().map { [$0] } ?? [] })]
+    }
 }
 
 /// `token-stats limits` prints every plan's limits and exits, without starting the app.

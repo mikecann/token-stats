@@ -287,3 +287,31 @@ enum LimitAccountMerger {
         return (tier, account.source)
     }
 }
+
+/// Reads Grok's `/billing?format=credits` response. It's protobuf JSON, which leaves out
+/// zero values, so a missing `creditUsagePercent` means nothing used yet.
+enum GrokLimitsParser {
+    static func apply(_ billing: [String: Any], to target: inout LimitAccount) {
+        let config = billing["config"] as? [String: Any] ?? billing
+        if let tier = config["subscription_tier"] as? String ?? billing["subscription_tier"] as? String {
+            target.plan = LimitFormat.plan(tier)
+        }
+        let period = config["currentPeriod"] as? [String: Any]
+        guard period != nil || config["creditUsagePercent"] != nil else { return }
+        let title: String
+        switch (period?["type"] as? String ?? "").uppercased() {
+        case let type where type.contains("WEEK"): title = "Weekly"
+        case let type where type.contains("MONTH"): title = "Monthly"
+        case let type where type.contains("DAY"): title = "Daily"
+        default: title = "Credits"
+        }
+        target.windows = [LimitWindow(
+            id: "credits", title: title,
+            usedPercent: CodexLimitsParser.number(config["creditUsagePercent"]) ?? 0,
+            resetsAt: LimitFormat.isoDate(period?["end"] ?? config["billingPeriodEnd"])
+        )]
+        if let onDemand = CodexLimitsParser.number((config["onDemandUsed"] as? [String: Any])?["val"]), onDemand > 0 {
+            target.notes.append("\(Int(onDemand)) on-demand credits used")
+        }
+    }
+}

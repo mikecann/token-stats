@@ -223,3 +223,45 @@ enum JSONRPCSession {
         }.value
     }
 }
+
+/// Reads Grok Build's monthly credit usage, the same call its `/usage` command makes, using
+/// the login in `~/.grok/auth.json`. Token Stats never refreshes or rewrites that login.
+enum GrokLimitsClient {
+    static var authURL: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok/auth.json") }
+
+    static func fetch() async -> LimitAccount? {
+        guard let data = try? Data(contentsOf: authURL),
+              let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let login = saved.values.compactMap({ $0 as? [String: Any] }).first(where: { $0["key"] is String }),
+              let token = login["key"] as? String else { return nil }
+        var account = LimitAccount(id: "grok:~/.grok", provider: .grok, email: login["email"] as? String, source: "~/.grok")
+        if let expires = LimitFormat.isoDate(login["expires_at"]), expires < Date() {
+            account.error = "Sign-in expired. Run grok once to refresh it."
+            return account
+        }
+        var request = URLRequest(url: URL(string: "https://cli-chat-proxy.grok.com/v1/billing?format=credits")!, timeoutInterval: 20)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(grokVersion, forHTTPHeaderField: "x-grok-client-version")
+        request.setValue("cli", forHTTPHeaderField: "x-grok-client-mode")
+        do {
+            let (body, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if ProcessInfo.processInfo.environment["TOKEN_STATS_DEBUG"] == "1" {
+                print("grok billing HTTP \(status): \(String(decoding: body.prefix(4000), as: UTF8.self))")
+            }
+            guard (200..<300).contains(status), let json = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+                throw LimitsError("Grok returned HTTP \(status)")
+            }
+            GrokLimitsParser.apply(json, to: &account)
+        } catch {
+            account.error = error.localizedDescription
+        }
+        return account
+    }
+
+    private static let grokVersion: String = {
+        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok/version.json")
+        let json = (try? Data(contentsOf: file)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        return json?["version"] as? String ?? "1.0.62"
+    }()
+}
