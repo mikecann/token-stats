@@ -17,6 +17,17 @@ case "${1:-start}" in
   restart)
     exec bash "$SCRIPT_DIR/restart.sh"
     ;;
+  limits)
+    shift
+    BIN="$APP_DIR/Contents/MacOS/token-stats-swift"
+    [[ -x "$BIN" ]] || bash "$SCRIPT_DIR/setup_mac.sh" >/dev/null
+    exec "$BIN" --limits "$@"
+    ;;
+  update-clis)
+    BIN="$APP_DIR/Contents/MacOS/token-stats-swift"
+    [[ -x "$BIN" ]] || bash "$SCRIPT_DIR/setup_mac.sh" >/dev/null
+    exec "$BIN" --update-clis
+    ;;
   stop|kill)
     exec bash "$SCRIPT_DIR/kill.sh"
     ;;
@@ -24,7 +35,7 @@ case "${1:-start}" in
     exec bash "$SCRIPT_DIR/setup_mac.sh"
     ;;
   *)
-    echo "Usage: token-stats [start|restart|stop|setup]" >&2
+    echo "Usage: token-stats [start|limits [codex|claude]|update-clis|restart|stop|setup]" >&2
     exit 2
     ;;
 esac

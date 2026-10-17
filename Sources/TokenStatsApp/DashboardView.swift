@@ -19,6 +19,7 @@ struct DashboardView: View {
             ScrollView {
                 VStack(spacing: 18) {
                     header
+                    PlanLimitsSection(store: LimitsStore.shared)
                     if let error = store.errorMessage {
                         warning(message: error)
                     }
