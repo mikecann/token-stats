@@ -18,15 +18,15 @@ struct MenuBarLabel: View {
     }
 }
 
-/// The panel that drops down from the menu bar.
+/// The panel that drops down from the menu bar: just how much is left on each account.
+/// Everything else lives in the main window.
 struct MenuBarPanel: View {
     @ObservedObject var store: LimitsStore
     let openDashboard: () -> Void
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(spacing: 10) {
                 Text("Plan limits").font(.headline)
                 Spacer()
                 if store.isRefreshing {
@@ -38,6 +38,9 @@ struct MenuBarPanel: View {
                 Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless)
                     .help("Refresh limits")
+                Button(action: openDashboard) { Image(systemName: "macwindow") }
+                    .buttonStyle(.borderless)
+                    .help("Open Token Stats")
             }
 
             if let notice = store.notice {
@@ -50,38 +53,39 @@ struct MenuBarPanel: View {
             } else {
                 // A plain stack: a ScrollView has no height of its own and collapses inside the menu.
                 VStack(spacing: 2) {
-                    ForEach(store.accounts) { AccountGlanceRow(account: $0) }
-                }
-            }
-
-            Divider()
-            CLIUpdatesRow(updater: CLIUpdater.shared)
-            Divider()
-            HStack {
-                Button("Open Token Stats", action: openDashboard)
-                Spacer()
-                Menu("Add account") {
-                    Button("Codex account…") { store.addAccount(.codex) }
-                    Button("Claude account…") { store.addAccount(.claude) }
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            }
-            HStack {
-                Toggle("Open at login", isOn: $launchAtLogin)
-                    .toggleStyle(.checkbox)
-                    .onChange(of: launchAtLogin) { _, enabled in
-                        try? enabled ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
-                        launchAtLogin = SMAppService.mainApp.status == .enabled
+                    ForEach(store.accounts) { account in
+                        AccountGlanceRow(account: account)
+                            .contentShape(Rectangle())
+                            .onTapGesture(perform: openDashboard)
                     }
-                Spacer()
-                Button("Quit") { NSApp.terminate(nil) }
+                }
             }
-            .font(.callout)
         }
         .padding(14)
         .frame(width: 360)
         .onAppear { store.refreshIfStale() }
+    }
+}
+
+/// Add account, Open at login, daily CLI updates and Quit, under the limits in the main window.
+struct LimitsSettingsBar: View {
+    @ObservedObject var store: LimitsStore
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 18) {
+            CLIUpdatesRow(updater: CLIUpdater.shared)
+                .frame(maxWidth: 420, alignment: .leading)
+            Spacer()
+            Toggle("Open at login", isOn: $launchAtLogin)
+                .toggleStyle(.checkbox)
+                .onChange(of: launchAtLogin) { _, enabled in
+                    try? enabled ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                    launchAtLogin = SMAppService.mainApp.status == .enabled
+                }
+            Button("Quit Token Stats") { NSApp.terminate(nil) }
+        }
+        .font(.callout)
     }
 }
 
@@ -281,10 +285,11 @@ struct PlanLimitsSection: View {
             if store.accounts.isEmpty {
                 Text(store.isRefreshing ? "Checking your plans…" : "No signed-in plans found.").foregroundStyle(.secondary)
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 14)], spacing: 14) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 14, alignment: .top)], spacing: 14) {
                     ForEach(store.accounts) { LimitAccountCard(account: $0) }
                 }
             }
+            LimitsSettingsBar(store: store)
         }
         .task { store.start() }
         .onAppear { store.refreshIfStale() }
@@ -304,9 +309,9 @@ enum LimitsSnapshot {
             let store = LimitsStore.shared
             store.refresh()
             while store.isRefreshing { try? await Task.sleep(for: .milliseconds(100)) }
-            save(MenuBarPanel(store: store) {}, size: NSSize(width: 360, height: 400), to: directory.appendingPathComponent("menu.png"))
+            save(MenuBarPanel(store: store) {}, size: NSSize(width: 360, height: 300), to: directory.appendingPathComponent("menu.png"))
             save(PlanLimitsSection(store: store).padding(24).frame(width: 1040).background(Color(red: 0.045, green: 0.052, blue: 0.065)),
-                 size: NSSize(width: 1040, height: 230), to: directory.appendingPathComponent("dashboard-limits.png"), dark: true)
+                 size: NSSize(width: 1040, height: 560), to: directory.appendingPathComponent("dashboard-limits.png"), dark: true)
             exit(0)
         }
         RunLoop.main.run()

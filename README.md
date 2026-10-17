@@ -55,7 +55,7 @@ or all time, then switch between tokens and API-equivalent cost. Click a provide
 to show or hide it. The dashboard includes totals, cached input, active days, and
 model breakdowns. Use the export button for a 1400 x 900 PNG.
 
-The menu bar icon shows a gauge and the percentage left on whichever plan is closest to its limit. Click it to see every account. Limits refresh every 5 minutes and whenever you open the menu. Tick **Open at login** in that menu to keep it running.
+The menu bar icon shows a gauge and the percentage left on whichever plan is closest to its limit. Click it for one line per account with what's left on its 5-hour and weekly limits. Everything else (every limit and when it resets, Add account, Open at login, CLI updates, Quit) is in the main window. Limits refresh every 5 minutes and whenever you open the menu or the window.
 
 ```bash
 token-stats          # Open the app, building it first if missing
@@ -83,12 +83,12 @@ The Codex index is cached in `~/Library/Application Support/Token Stats`.
 - **Codex:** Token Stats runs `codex app-server` and asks it for `account/rateLimits/read`, the same numbers Codex shows. Each account is its own `CODEX_HOME`, starting with `~/.codex`.
 - **Claude:** Token Stats reads Claude Code's saved login from the Keychain and asks Anthropic's usage endpoint, the one behind `/usage`. It reads the login through Apple's `security` tool, the same way Claude Code saves it, so there are no Keychain prompts. It shows the 5-hour and weekly limits, per-model weekly limits, dollar allowances and any extra usage spent.
 - **Duplicates:** two logins for the same email are the same plan, so they show as one card. If you add one that's already there, Token Stats signs that extra login out and removes its folder. It never touches `~/.claude` or `~/.codex`.
-- **More accounts:** choose **Add account** in the menu. Token Stats makes a folder for the login under `~/Library/Application Support/Token Stats/Accounts` and opens Terminal on `codex login` or `claude auth login` pointed at it. Switch accounts in the browser first if it picks the wrong one. The new account shows up by itself a few seconds after you finish signing in. To use that account yourself, run `CODEX_HOME=<folder> codex` or `CLAUDE_CONFIG_DIR=<folder> claude`.
+- **More accounts:** choose **Add account** in the main window. Token Stats makes a folder for the login under `~/Library/Application Support/Token Stats/Accounts` and opens Terminal on `codex login` or `claude auth login` pointed at it. Switch accounts in the browser first if it picks the wrong one. The new account shows up by itself a few seconds after you finish signing in. To use that account yourself, run `CODEX_HOME=<folder> codex` or `CLAUDE_CONFIG_DIR=<folder> claude`.
 - An expired Claude login shows a warning until you run `claude` with that account again. Token Stats never refreshes or rewrites anyone's login.
 
 ## Keeping the CLIs updated
 
-While it's running, Token Stats updates the agent CLIs once a day: `claude update`, `npm install -g @openai/codex@latest` (only when Codex was installed with npm), `grok update`, and Muse's own launcher with `MUSE_LAUNCHER_INSTALL=1`. They run one at a time. The menu shows what changed last time, and the full output goes to `~/Library/Application Support/Token Stats/cli-updates.log`. Untick **Update CLIs daily** in the menu to stop it.
+While it's running, Token Stats updates the agent CLIs once a day: `claude update`, `npm install -g @openai/codex@latest` (only when Codex was installed with npm), `grok update`, and Muse's own launcher with `MUSE_LAUNCHER_INSTALL=1`. They run one at a time. The main window shows what changed last time, and the full output goes to `~/Library/Application Support/Token Stats/cli-updates.log`. Untick **Update CLIs daily** in the main window to stop it.
 
 ## OpenRouter
 
