@@ -3,6 +3,9 @@ import Foundation
 
 @MainActor
 final class UsageStore: ObservableObject {
+    /// One store for the whole app, so closing and reopening the window keeps what's loaded.
+    static let shared = UsageStore()
+
     @Published private(set) var records: [UsageRecord] = []
     @Published private(set) var isLoading = false
     @Published private(set) var lastRefresh: Date?
@@ -123,6 +126,26 @@ final class UsageStore: ObservableObject {
     }
 }
 
+/// `token-stats usage` reads the local logs the way the window does and prints the totals.
+enum UsageCommand {
+    static func runIfRequested() {
+        guard CommandLine.arguments.dropFirst().first == "--usage" else { return }
+        let started = Date()
+        Task.detached {
+            let loaded = await UsageLoader.loadAll(openRouterBookmark: nil, openRouterManagementKey: nil)
+            let start = DashboardRange.thirtyDays.startDate(relativeTo: Date(), records: [])
+            for provider in [UsageProvider.claude, .codex] {
+                let all = loaded.records.filter { $0.provider == provider }
+                let recent = all.filter { $0.date >= start }
+                print("\(provider.rawValue): \(all.count.formatted()) records, \(TokenFormat.compact(recent.reduce(0) { $0 + $1.totalTokens })) tokens in the last 30 days")
+            }
+            print(String(format: "Read in %.1fs", Date().timeIntervalSince(started)))
+            exit(0)
+        }
+        RunLoop.main.run()
+    }
+}
+
 private enum UsageLoader {
     struct Result {
         let records: [UsageRecord]
@@ -145,23 +168,22 @@ private enum UsageLoader {
             home.appendingPathComponent(".codex/archived_sessions")
         ]
         let codexFiles = codexDirectories.flatMap { jsonlFiles(under: $0) }
-        if RipgrepCodexLogReader.isAvailable {
-            records += CodexUsageIndex.load(files: codexFiles)
-        } else {
+        // Replaced by codex-index-v2.json, which shares its format with the Claude index.
+        try? FileManager.default.removeItem(at: home.appendingPathComponent("Library/Application Support/Token Stats/codex-index-v1.json"))
+        records += UsageFileIndex.codex.load(files: codexFiles) { changed in
             // The app is most often launched alongside Codex, which bundles
             // ripgrep. Keep a pure Swift fallback so the tool still works if
             // that binary moves or is unavailable.
-            for url in codexFiles {
-                records += CodexUsageParser.parse(
-                    lines: StreamingCodexLogReader.relevantLines(at: url),
-                    sourceID: url.path
-                )
-            }
+            let grouped = RipgrepCodexLogReader.relevantLinesByFile(files: changed)
+            return Dictionary(uniqueKeysWithValues: changed.map { url in
+                let lines = grouped.map { $0[url.path] ?? [] } ?? StreamingCodexLogReader.relevantLines(at: url)
+                return (url.path, CodexUsageParser.parse(lines: lines, sourceID: url.path))
+            })
         }
 
         let claudeDirectory = home.appendingPathComponent(".claude/projects")
-        for url in jsonlFiles(under: claudeDirectory) {
-            records += ClaudeUsageParser.parse(lines: readLines(url), sourceID: url.path)
+        records += UsageFileIndex.claude.load(files: jsonlFiles(under: claudeDirectory)) { changed in
+            parallelMap(changed) { ClaudeUsageParser.parse(fileAt: $0) }
         }
 
         if let bookmark = openRouterBookmark {
@@ -228,15 +250,19 @@ private enum UsageLoader {
         }
     }
 
-    private static func readLines(_ url: URL) -> [String] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-        return content.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+    /// Parses files on every core. The first run reads every session log there is.
+    private static func parallelMap(_ urls: [URL], _ transform: (URL) -> [UsageRecord]) -> [String: [UsageRecord]] {
+        var results = [[UsageRecord]](repeating: [], count: urls.count)
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: urls.count) { index in
+            let parsed = autoreleasepool { transform(urls[index]) }
+            lock.lock(); results[index] = parsed; lock.unlock()
+        }
+        return Dictionary(uniqueKeysWithValues: zip(urls.map(\.path), results))
     }
 }
 
 private enum RipgrepCodexLogReader {
-    static var isAvailable: Bool { executableURL() != nil }
-
     static func relevantLinesByFile(files: [URL]) -> [String: [String]]? {
         guard let executable = executableURL() else { return nil }
         let existingFiles = files.filter {
@@ -287,88 +313,6 @@ private enum RipgrepCodexLogReader {
         return candidates.first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
         }).map(URL.init(fileURLWithPath:))
-    }
-}
-
-private enum CodexUsageIndex {
-    private struct FileEntry: Codable {
-        let size: Int64
-        let modifiedAt: TimeInterval
-        let records: [UsageRecord]
-    }
-
-    private struct Index: Codable {
-        let version: Int
-        var files: [String: FileEntry]
-    }
-
-    private static let version = 1
-
-    static func load(files: [URL]) -> [UsageRecord] {
-        var index = readIndex()
-        let metadata = Dictionary(uniqueKeysWithValues: files.compactMap { url in
-            fileMetadata(url).map { (url.path, $0) }
-        })
-        let changedFiles = files.filter { url in
-            guard let current = metadata[url.path],
-                  let cached = index.files[url.path] else { return true }
-            return cached.size != current.size || cached.modifiedAt != current.modifiedAt
-        }
-
-        if !changedFiles.isEmpty,
-           let grouped = RipgrepCodexLogReader.relevantLinesByFile(files: changedFiles) {
-            for file in changedFiles {
-                guard let current = metadata[file.path] else { continue }
-                let parsed = CodexUsageParser.parse(
-                    lines: grouped[file.path] ?? [],
-                    sourceID: file.path
-                )
-                index.files[file.path] = FileEntry(
-                    size: current.size,
-                    modifiedAt: current.modifiedAt,
-                    records: parsed
-                )
-            }
-        }
-
-        let existingPaths = Set(metadata.keys)
-        index.files = index.files.filter { existingPaths.contains($0.key) }
-        writeIndex(index)
-        return index.files.values.flatMap(\.records)
-    }
-
-    private static func fileMetadata(_ url: URL) -> (size: Int64, modifiedAt: TimeInterval)? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attributes[.size] as? NSNumber,
-              let modified = attributes[.modificationDate] as? Date else {
-            return nil
-        }
-        return (size.int64Value, modified.timeIntervalSinceReferenceDate)
-    }
-
-    private static func readIndex() -> Index {
-        guard let data = try? Data(contentsOf: indexURL),
-              let decoded = try? JSONDecoder().decode(Index.self, from: data),
-              decoded.version == version else {
-            return Index(version: version, files: [:])
-        }
-        return decoded
-    }
-
-    private static func writeIndex(_ index: Index) {
-        guard let data = try? JSONEncoder().encode(index) else { return }
-        let directory = indexURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: indexURL, options: .atomic)
-    }
-
-    private static var indexURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Token Stats", isDirectory: true)
-            .appendingPathComponent("codex-index-v1.json")
     }
 }
 

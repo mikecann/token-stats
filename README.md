@@ -62,6 +62,7 @@ The menu bar icon shows a gauge and the percentage left on whichever 5-hour or w
 ```bash
 token-stats          # Open the app, building it first if missing
 token-stats limits   # Print every plan's limits in the terminal (or: limits codex, limits claude)
+token-stats usage    # Read the session logs and print record counts and 30-day token totals
 token-stats update-clis  # Update Claude Code, Codex, Grok and Muse now
 token-stats restart  # Stop, build a debug app, and launch it
 token-stats stop     # Stop the running app
@@ -76,9 +77,15 @@ Codex is read from `~/.codex/sessions` and `~/.codex/archived_sessions`.
 Claude is read from `~/.claude/projects`. Claude's streamed JSONL entries are
 deduplicated by message ID so partial copies are not counted repeatedly.
 
+Session logs get big (gigabytes, with single files over 250 MB), so they're
+streamed rather than read whole, and Claude logs only have their assistant
+lines decoded. What each file held is cached by size and modification time in
+`~/Library/Application Support/Token Stats` (`claude-index-v1.json` and
+`codex-index-v2.json`), so after the first read only new or changed sessions
+are read again. Closing the window keeps what's loaded.
+
 Ripgrep speeds up Codex history loading when found in the ChatGPT app or a
 Homebrew installation. There is a pure Swift fallback, so it isn't required.
-The Codex index is cached in `~/Library/Application Support/Token Stats`.
 
 ## Plan limits
 

@@ -8,6 +8,7 @@ struct TokenStatsApplication: App {
 
     init() {
         LimitsCommand.runIfRequested()
+        UsageCommand.runIfRequested()
         #if DEBUG
         LimitsSnapshot.renderIfRequested()
         #endif

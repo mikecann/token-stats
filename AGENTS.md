@@ -27,9 +27,14 @@ requires macOS 14 or later, and is a self-contained Swift package.
 - `Sources/TokenStatsApp/UsageParsers.swift` parses local session logs and
   OpenRouter data. Preserve cumulative Codex deltas and Claude message-ID
   deduplication when changing parsers.
-- `UsageStore.swift` loads local histories, persists the CSV bookmark, and
-  caches the Codex index under `~/Library/Application Support/Token Stats`.
-  Ripgrep is optional; keep the Swift fallback working.
+- `UsageStore.swift` loads local histories and persists the CSV bookmark.
+  `UsageStore.shared` lives for the whole app so reopening the window doesn't
+  reload. `UsageFileIndex.swift` caches each log file's records by size and
+  modification time (`claude-index-v1.json`, `codex-index-v2.json` under
+  `~/Library/Application Support/Token Stats`) and holds `JSONLReader`, which
+  streams files. Never read a whole session log into memory: they run to
+  gigabytes and that's what made the app use 5 GB. Ripgrep is optional; keep
+  the Swift fallback working. `token-stats usage` prints totals for checking.
 - `PricingCatalog.swift` contains dated API price estimates. Unknown model
   tokens still count even when no price is available.
 - `OpenRouterActivity.swift` builds read-only activity requests and stores the
