@@ -48,14 +48,17 @@ requires macOS 14 or later, and is a self-contained Swift package.
   via `/usr/bin/security`, which Claude Code writes with, so there's no
   prompt; never read it with SecItem APIs), and
   `LimitsStore.swift` discovers accounts, refreshes every 5 minutes and backs
-  both the menu bar (`LimitsViews.swift`) and the dashboard section. Never renew or
-  rewrite the main logins (`~/.claude`, `~/.codex`, Grok, Muse); their own CLIs
-  do that, and two programs renewing one login sign each other out. The one
-  exception is Claude logins Token Stats made in its Accounts folder, which
-  nothing else uses: `ClaudeLimitsClient` renews those near expiry with their
-  refresh token (`ClaudeLoginRenewal`), under a `flock` in the login's folder,
-  and saves them back with `security -i` the way Claude Code does. Never log
-  tokens. `LimitAccountMerger` shows one
+  both the menu bar (`LimitsViews.swift`) and the dashboard section. Claude and Grok logins
+  only renew while their CLI runs, so Token Stats renews them near expiry
+  (`ClaudeLoginRenewal`, `GrokLoginRenewal`). Spending a refresh token twice
+  signs a login out, so always renew under the CLI's own lock and re-read the
+  login once it's held: Claude Code's `<config dir>/.oauth_refresh.lock` folder
+  (`DirectoryLock`, stale after 60s like proper-lockfile) and Grok's `flock` on
+  `~/.grok/auth.json.lock` (`FileLock`). Save Claude logins with
+  `security -i` on stdin; only ones too long for its 4032-byte line (MCP
+  sign-ins make the main one ~6 KB) go as an argument, as Claude Code does. Only renew Claude logins whose config folder is known
+  (`~/.claude` or Token Stats' Accounts folders). Never touch Codex or Muse
+  logins. Never log tokens. `LimitAccountMerger` shows one
   card per email and removes duplicate logins Token Stats made itself. `token-stats limits` prints
   the same data for checking without the UI.
 - `CLIUpdater.swift` updates the agent CLIs once a day (checked hourly) and

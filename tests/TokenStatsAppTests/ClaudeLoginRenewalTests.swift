@@ -57,19 +57,32 @@ final class ClaudeLoginRenewalTests: XCTestCase {
         XCTAssertNil(ClaudeLoginRenewal.renewed(saved, with: ["error": "invalid_grant"], now: Date()))
     }
 
-    func testOnlyARejectedLoginSaysToAddItAgain() {
+    func testOnlyARejectedLoginSaysToSignInAgain() {
         XCTAssertEqual(
-            ClaudeLoginRenewal.failureMessage(status: 400, reason: "invalid_grant"),
+            LoginRenewal.failureMessage(status: 400, reason: "invalid_grant", signInAgain: "Remove this login and add it again."),
             "Sign-in expired and couldn't be renewed (invalid_grant). Remove this login and add it again."
         )
         XCTAssertEqual(
-            ClaudeLoginRenewal.failureMessage(status: 429, reason: "Rate limited. Please try again later."),
+            LoginRenewal.failureMessage(status: 429, reason: "Rate limited. Please try again later.", signInAgain: "x"),
             "Couldn't renew this sign-in just now (HTTP 429: Rate limited. Please try again later.). Token Stats tries again in a few minutes."
         )
         XCTAssertEqual(
-            ClaudeLoginRenewal.failureMessage(status: 0, reason: "The Internet connection appears to be offline."),
+            LoginRenewal.failureMessage(status: 0, reason: "The Internet connection appears to be offline.", signInAgain: "x"),
             "Couldn't renew this sign-in just now (The Internet connection appears to be offline.). Token Stats tries again in a few minutes."
         )
+    }
+
+    func testEachLoginRenewsUnderTheFolderClaudeCodeLocks() {
+        let home = URL(fileURLWithPath: "/Users/me")
+        let added = URL(fileURLWithPath: "/Users/me/Library/Application Support/Token Stats/Accounts/claude-1")
+
+        XCTAssertEqual(ClaudeLoginRenewal.configDir(service: "Claude Code-credentials-1a2b3c4d", folder: added, home: home, environment: [:]), added)
+        XCTAssertEqual(ClaudeLoginRenewal.configDir(service: "Claude Code-credentials", folder: nil, home: home, environment: [:])?.path, "/Users/me/.claude")
+        XCTAssertEqual(ClaudeLoginRenewal.configDir(service: "Claude Code-credentials", folder: nil, home: home,
+                                                    environment: ["CLAUDE_CONFIG_DIR": "/tmp/elsewhere"])?.path, "/tmp/elsewhere")
+        // A login made with some other CLAUDE_CONFIG_DIR: its folder (and so its lock) is unknown, so it's left alone.
+        XCTAssertNil(ClaudeLoginRenewal.configDir(service: "Claude Code-credentials-99999999", folder: nil, home: home, environment: [:]))
+        XCTAssertEqual(ClaudeLoginRenewal.lockURL(configDir: added).lastPathComponent, ".oauth_refresh.lock")
     }
 
     func testKeychainAccountComesFromSecurityAttributes() {

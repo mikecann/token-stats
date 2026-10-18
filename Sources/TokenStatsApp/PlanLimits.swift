@@ -369,9 +369,22 @@ enum MuseLimitsParser {
     }
 }
 
-/// Renews a Claude Code login the same way Claude Code does, for the logins Token Stats made
-/// itself. Nothing else ever runs with those, so without this they lapse a few hours after
-/// they're added.
+enum LoginRenewal {
+    /// The login being turned down means signing in again. Anything else, like a rate limit or
+    /// no connection, is worth another go at the next check.
+    static func failureMessage(status: Int, reason: String?, signInAgain: String) -> String {
+        if [400, 401, 403].contains(status) {
+            return "Sign-in expired and couldn't be renewed (\(reason ?? "HTTP \(status)")). \(signInAgain)"
+        }
+        let detail = status > 0 ? "HTTP \(status)\(reason.map { ": \($0)" } ?? "")" : reason ?? "no answer"
+        return "Couldn't renew this sign-in just now (\(detail)). Token Stats tries again in a few minutes."
+    }
+}
+
+/// Renews a Claude Code login the same way Claude Code does. Claude Code only renews a login
+/// while it's running with it, so logins that aren't used in a terminal on this Mac (the ones
+/// Token Stats added, and the main one when Claude Code only runs in the desktop app) lapse
+/// within hours.
 enum ClaudeLoginRenewal {
     static let tokenURL = URL(string: "https://platform.claude.com/v1/oauth/token")!
     static let clientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -391,14 +404,19 @@ enum ClaudeLoginRenewal {
         return request
     }
 
-    /// Anthropic turning the refresh token down means signing in again. Anything else, like a
-    /// rate limit or no connection, is worth another go at the next check.
-    static func failureMessage(status: Int, reason: String?) -> String {
-        if [400, 401, 403].contains(status) {
-            return "Sign-in expired and couldn't be renewed (\(reason ?? "HTTP \(status)")). Remove this login and add it again."
-        }
-        let detail = status > 0 ? "HTTP \(status)\(reason.map { ": \($0)" } ?? "")" : reason ?? "no answer"
-        return "Couldn't renew this sign-in just now (\(detail)). Token Stats tries again in a few minutes."
+    /// Claude Code's own renewal lock for a login, a folder it makes inside the login's config
+    /// folder. Taking the same one means Token Stats and a running `claude` never renew at once.
+    static func lockURL(configDir: URL) -> URL {
+        configDir.appendingPathComponent(".oauth_refresh.lock", isDirectory: true)
+    }
+
+    /// The config folder a saved login belongs to, which is where its lock lives. Nil for logins
+    /// made with some other `CLAUDE_CONFIG_DIR`, which are left alone.
+    static func configDir(service: String, folder: URL?, home: URL, environment: [String: String]) -> URL? {
+        if let folder { return folder }
+        guard service == ClaudeLimitsClient.servicePrefix else { return nil }
+        if let custom = environment["CLAUDE_CONFIG_DIR"], !custom.isEmpty { return URL(fileURLWithPath: custom, isDirectory: true) }
+        return home.appendingPathComponent(".claude", isDirectory: true)
     }
 
     /// The saved login with the new tokens and expiry in place, or nil if the answer has no token.
@@ -439,6 +457,9 @@ enum ClaudeLoginRenewal {
         return String(output[range].dropFirst(#""acct"<blob>=""#.count).dropLast())
     }
 
+    /// The longest line `security -i` reads.
+    static let saveLineLimit = 4032
+
     /// A line for `security -i`, which keeps the login out of the process list.
     static func saveCommand(account: String, service: String, secret: Data) -> String {
         let hex = secret.map { String(format: "%02x", $0) }.joined()
@@ -447,5 +468,41 @@ enum ClaudeLoginRenewal {
 
     private static func quoted(_ value: String) -> String {
         "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+}
+
+/// Renews Grok's login the way Grok does: an OAuth refresh at the issuer saved in `auth.json`.
+/// Grok only renews while it's running, so without this its card lapses within hours.
+enum GrokLoginRenewal {
+    static let margin: TimeInterval = 10 * 60
+    private static let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+    static func request(tokenEndpoint: URL, refreshToken: String, clientID: String) -> URLRequest {
+        let fields = [("grant_type", "refresh_token"), ("refresh_token", refreshToken), ("client_id", clientID)]
+        var request = URLRequest(url: tokenEndpoint, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = Data(fields.map { "\($0)=\($1.addingPercentEncoding(withAllowedCharacters: unreserved) ?? $1)" }
+            .joined(separator: "&").utf8)
+        return request
+    }
+
+    /// The login entry with the new token and expiry, or nil if the answer has no token.
+    static func renewed(_ login: [String: Any], with response: [String: Any], now: Date) -> [String: Any]? {
+        guard let access = response["access_token"] as? String, !access.isEmpty,
+              let lifetime = (response["expires_in"] as? NSNumber)?.doubleValue else { return nil }
+        var updated = login
+        updated["key"] = access
+        if let refresh = response["refresh_token"] as? String, !refresh.isEmpty { updated["refresh_token"] = refresh }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        updated["expires_at"] = formatter.string(from: now.addingTimeInterval(lifetime))
+        return updated
+    }
+
+    /// Grok writes `pid:unix-seconds` into `auth.json.lock` while it holds it.
+    static func lockContents(pid: Int32, now: Date) -> String {
+        "\(pid):\(Int(now.timeIntervalSince1970))"
     }
 }
