@@ -63,13 +63,27 @@ enum ClaudeLimitsClient {
 
     static func fetch(service: String, label: String, folder: URL?) async -> LimitAccount {
         var account = LimitAccount(id: "claude:\(service)", provider: .claude, source: label, folder: folder)
-        guard let oauth = readOAuth(service: service), let token = oauth["accessToken"] as? String else {
+        guard var oauth = readSaved(service: service)?["claudeAiOauth"] as? [String: Any] else {
             account.error = "Couldn't read this Claude login from the Keychain"
             return account
         }
         account.plan = LimitFormat.plan(oauth["subscriptionType"] as? String)
-        if let expires = LimitFormat.isoDate(oauth["expiresAt"]), expires < Date() {
-            account.error = "Sign-in expired. Run claude with this account once to refresh it."
+        let expires = LimitFormat.isoDate(oauth["expiresAt"])
+        if let folder, let expires, expires < Date().addingTimeInterval(ClaudeLoginRenewal.margin) {
+            // Only logins Token Stats made are renewed here. The main one is Claude Code's, and
+            // two programs renewing the same login can sign each other out.
+            do {
+                oauth = try await renew(service: service, folder: folder)
+            } catch {
+                account.error = "Sign-in expired and couldn't be renewed (\(error.localizedDescription)). Remove this login and add it again."
+                return account
+            }
+        } else if let expires, expires < Date() {
+            account.error = "Sign-in expired. Run claude once to refresh it."
+            return account
+        }
+        guard let token = oauth["accessToken"] as? String else {
+            account.error = "Couldn't read this Claude login from the Keychain"
             return account
         }
         do {
@@ -100,11 +114,58 @@ enum ClaudeLimitsClient {
     /// Claude Code writes its login with Apple's `security` tool, so that tool is the one the
     /// Keychain trusts to read it back. Going through it means no "allow access" prompts, even
     /// after Claude Code rewrites the item when it refreshes the login.
-    private static func readOAuth(service: String) -> [String: Any]? {
+    private static func readSaved(service: String) -> [String: Any]? {
         let result = ProcessRunner.run(["/usr/bin/security", "find-generic-password", "-s", service, "-w"], timeout: 15)
-        guard result.status == 0,
-              let saved = try? JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any] else { return nil }
-        return saved["claudeAiOauth"] as? [String: Any]
+        guard result.status == 0 else { return nil }
+        return try? JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any]
+    }
+
+    /// Swaps the refresh token for new tokens and saves them where Claude Code keeps them.
+    /// A lock file in the login's folder stops the app and `token-stats limits` renewing at
+    /// once, which would spend the same refresh token twice.
+    private static func renew(service: String, folder: URL) async throws -> [String: Any] {
+        let lock = try await FolderLock.acquire(folder.appendingPathComponent(".token-stats-renew.lock"))
+        defer { lock.release() }
+        guard let saved = readSaved(service: service), let oauth = saved["claudeAiOauth"] as? [String: Any] else {
+            throw LimitsError("couldn't read the login")
+        }
+        // Someone else may have renewed it while this waited for the lock.
+        if let expires = LimitFormat.isoDate(oauth["expiresAt"]), expires > Date().addingTimeInterval(ClaudeLoginRenewal.margin) {
+            return oauth
+        }
+        guard let refreshToken = oauth["refreshToken"] as? String, !refreshToken.isEmpty else {
+            throw LimitsError("no refresh token saved")
+        }
+        var request = ClaudeLoginRenewal.request(refreshToken: refreshToken, scopes: oauth["scopes"] as? [String])
+        request.setValue("claude-code/\(claudeVersion)", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        guard (200..<300).contains(status), let renewed = ClaudeLoginRenewal.renewed(saved, with: json, now: Date()) else {
+            let reason = json["error_description"] as? String ?? json["error"] as? String
+                ?? ((json["error"] as? [String: Any])?["message"] as? String)
+            throw LimitsError("Anthropic returned HTTP \(status)\(reason.map { ": \($0)" } ?? "")")
+        }
+        try save(renewed, service: service)
+        guard let stored = readSaved(service: service)?["claudeAiOauth"] as? [String: Any],
+              stored["accessToken"] as? String == (renewed["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String else {
+            throw LimitsError("the Keychain didn't keep the renewed login")
+        }
+        return stored
+    }
+
+    /// Writes the login back the way Claude Code does: `security -i` with the login hex-encoded
+    /// on stdin, or as an argument when it's too long for one `security -i` line.
+    private static func save(_ saved: [String: Any], service: String) throws {
+        let secret = try ClaudeLoginRenewal.asciiJSON(saved)
+        let attributes = ProcessRunner.run(["/usr/bin/security", "find-generic-password", "-s", service], timeout: 15)
+        let account = ClaudeLoginRenewal.keychainAccount(fromAttributes: attributes.output) ?? NSUserName()
+        let command = ClaudeLoginRenewal.saveCommand(account: account, service: service, secret: secret)
+        let result = command.utf8.count <= 4032
+            ? ProcessRunner.run(["/usr/bin/security", "-i"], input: Data(command.utf8), timeout: 15)
+            : ProcessRunner.run(["/usr/bin/security", "add-generic-password", "-U", "-a", account, "-s", service,
+                                 "-X", secret.map { String(format: "%02x", $0) }.joined()], timeout: 15)
+        guard result.status == 0 else { throw LimitsError("couldn't save the renewed login to the Keychain") }
     }
 
     private static func get(_ url: String, token: String) async throws -> [String: Any] {
@@ -124,6 +185,32 @@ enum ClaudeLimitsClient {
             throw LimitsError("Unexpected response from Anthropic")
         }
         return object
+    }
+}
+
+/// An exclusive `flock` on a file, shared between the app and the `token-stats` command.
+final class FolderLock: @unchecked Sendable {
+    private let descriptor: Int32
+
+    private init(descriptor: Int32) { self.descriptor = descriptor }
+
+    static func acquire(_ url: URL, timeout: TimeInterval = 60) async throws -> FolderLock {
+        let descriptor = open(url.path, O_CREAT | O_RDWR, 0o600)
+        guard descriptor >= 0 else { throw LimitsError("couldn't open \(url.lastPathComponent)") }
+        let deadline = Date().addingTimeInterval(timeout)
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            guard Date() < deadline else {
+                close(descriptor)
+                throw LimitsError("another renewal is still running")
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        return FolderLock(descriptor: descriptor)
+    }
+
+    func release() {
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
     }
 }
 

@@ -368,3 +368,72 @@ enum MuseLimitsParser {
         return value
     }
 }
+
+/// Renews a Claude Code login the same way Claude Code does, for the logins Token Stats made
+/// itself. Nothing else ever runs with those, so without this they lapse a few hours after
+/// they're added.
+enum ClaudeLoginRenewal {
+    static let tokenURL = URL(string: "https://platform.claude.com/v1/oauth/token")!
+    static let clientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    /// Renewing a little early means a card never shows a lapsed login between 5-minute checks.
+    static let margin: TimeInterval = 10 * 60
+
+    static func request(refreshToken: String, scopes: [String]?) -> URLRequest {
+        var body = ["grant_type": "refresh_token", "refresh_token": refreshToken, "client_id": clientID]
+        if let scopes, !scopes.isEmpty { body["scope"] = scopes.joined(separator: " ") }
+        var request = URLRequest(url: tokenURL, timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
+    /// The saved login with the new tokens and expiry in place, or nil if the answer has no token.
+    static func renewed(_ saved: [String: Any], with response: [String: Any], now: Date) -> [String: Any]? {
+        guard var oauth = saved["claudeAiOauth"] as? [String: Any],
+              let access = response["access_token"] as? String, !access.isEmpty,
+              let lifetime = (response["expires_in"] as? NSNumber)?.doubleValue else { return nil }
+        oauth["accessToken"] = access
+        if let refresh = response["refresh_token"] as? String, !refresh.isEmpty { oauth["refreshToken"] = refresh }
+        oauth["expiresAt"] = Int((now.timeIntervalSince1970 + lifetime) * 1000)
+        if let scope = response["scope"] as? String, !scope.isEmpty {
+            oauth["scopes"] = scope.split(separator: " ").map(String.init)
+        }
+        var updated = saved
+        updated["claudeAiOauth"] = oauth
+        return updated
+    }
+
+    /// JSON with anything outside ASCII escaped, because `security -w` prints a secret holding
+    /// other bytes as hex, and Claude Code (and Token Stats) would then fail to read it back.
+    static func asciiJSON(_ object: [String: Any]) throws -> Data {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
+        var text = ""
+        for scalar in String(decoding: data, as: UTF8.self).unicodeScalars {
+            if scalar.isASCII {
+                text.unicodeScalars.append(scalar)
+            } else {
+                for unit in String(scalar).utf16 { text += String(format: "\\u%04x", unit) }
+            }
+        }
+        return Data(text.utf8)
+    }
+
+    /// The `acct` attribute from `security find-generic-password` output, so the save
+    /// updates the same Keychain item instead of adding a second one.
+    static func keychainAccount(fromAttributes output: String) -> String? {
+        guard let range = output.range(of: #""acct"<blob>="([^"]*)""#, options: .regularExpression) else { return nil }
+        return String(output[range].dropFirst(#""acct"<blob>=""#.count).dropLast())
+    }
+
+    /// A line for `security -i`, which keeps the login out of the process list.
+    static func saveCommand(account: String, service: String, secret: Data) -> String {
+        let hex = secret.map { String(format: "%02x", $0) }.joined()
+        return "add-generic-password -U -a \(quoted(account)) -s \(quoted(service)) -X \(quoted(hex))\n"
+    }
+
+    private static func quoted(_ value: String) -> String {
+        "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+}
