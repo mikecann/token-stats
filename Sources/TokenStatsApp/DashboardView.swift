@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct DashboardView: View {
-    @StateObject private var store = UsageStore()
+    @ObservedObject private var store = UsageStore.shared
     @State private var selectedRange: DashboardRange = .thirtyDays
     @State private var selectedMetric: DashboardMetric = .tokens
     @State private var enabledProviders = Set(UsageProvider.allCases)
@@ -23,7 +23,9 @@ struct DashboardView: View {
                     if let error = store.errorMessage {
                         warning(message: error)
                     }
-                    if store.records.isEmpty, !store.isLoading {
+                    if store.records.isEmpty, store.isLoading {
+                        loadingState
+                    } else if store.records.isEmpty {
                         emptyState
                     } else {
                         summaryRow
@@ -351,6 +353,19 @@ struct DashboardView: View {
         let base = "Estimates use public API list prices checked 25 Jul 2026. OpenRouter API and export values use exact billed spend."
         guard snapshot.unpricedLabelCount > 0 else { return base }
         return "\(base) \(TokenFormat.compact(snapshot.unpricedTokens)) tokens across \(snapshot.unpricedLabelCount) unpriced label\(snapshot.unpricedLabelCount == 1 ? "" : "s") are excluded from cost."
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+            Text("Reading your session logs")
+                .font(.title2.weight(.semibold))
+            Text("The first time can take a minute. After that only new sessions are read.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+        }
+        .frame(maxWidth: .infinity, minHeight: 450)
     }
 
     private var emptyState: some View {

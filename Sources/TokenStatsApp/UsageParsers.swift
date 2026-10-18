@@ -14,10 +14,16 @@ private enum JSONValue {
 
     static func date(_ value: Any?) -> Date? {
         guard let string = value as? String else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
+        return isoDate(string)
     }
+}
+
+/// Logs hold hundreds of thousands of timestamps, so the parse styles are made once.
+private let fractionalISO = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+private let wholeSecondISO = Date.ISO8601FormatStyle()
+
+func isoDate(_ string: String) -> Date? {
+    (try? fractionalISO.parse(string)) ?? (try? wholeSecondISO.parse(string))
 }
 
 enum CodexUsageParser {
@@ -90,37 +96,76 @@ enum CodexUsageParser {
 }
 
 enum ClaudeUsageParser {
-    static func parse(lines: [String], sourceID: String) -> [UsageRecord] {
-        var bestByMessageID: [String: UsageRecord] = [:]
-        var scoreByMessageID: [String: Int] = [:]
+    /// Only assistant lines carry usage, and they're a fraction of a session log.
+    static let marker = #""type":"assistant""#
 
-        for (index, line) in lines.enumerated() {
-            guard let root = JSONValue.dictionary(line),
-                  root["type"] as? String == "assistant",
-                  let message = root["message"] as? [String: Any],
-                  let usage = message["usage"] as? [String: Any],
-                  let date = JSONValue.date(root["timestamp"]) else {
-                continue
-            }
-            let messageID = (message["id"] as? String) ?? "\(sourceID):\(index)"
-            let model = (message["model"] as? String) ?? "unknown-claude-model"
+    static func parse(fileAt url: URL) -> [UsageRecord] {
+        var parser = Accumulator(sourceID: url.path)
+        JSONLReader.forEachLine(at: url, containing: marker) { parser.add($0) }
+        return parser.records
+    }
+
+    static func parse(lines: [String], sourceID: String) -> [UsageRecord] {
+        var parser = Accumulator(sourceID: sourceID)
+        for line in lines where line.contains(marker) { parser.add(Data(line.utf8)) }
+        return parser.records
+    }
+
+    /// Claude Code writes a streamed message several times as it grows, so each message ID
+    /// keeps its biggest version.
+    struct Accumulator {
+        let sourceID: String
+        private var best: [String: UsageRecord] = [:]
+        private var index = 0
+        private let decoder = JSONDecoder()
+
+        init(sourceID: String) { self.sourceID = sourceID }
+
+        mutating func add(_ line: Data) {
+            defer { index += 1 }
+            guard let entry = try? decoder.decode(LogLine.self, from: line),
+                  entry.type == "assistant",
+                  let message = entry.message,
+                  let usage = message.usage,
+                  let date = entry.timestamp.flatMap(isoDate) else { return }
+            let messageID = message.id ?? "\(sourceID):\(index)"
             let record = UsageRecord(
                 id: "\(sourceID):\(messageID)",
                 date: date,
                 provider: .claude,
-                model: model,
-                inputTokens: JSONValue.int(usage, "input_tokens"),
-                cachedInputTokens: JSONValue.int(usage, "cache_read_input_tokens"),
-                cacheWriteTokens: JSONValue.int(usage, "cache_creation_input_tokens"),
-                outputTokens: JSONValue.int(usage, "output_tokens")
+                model: message.model ?? "unknown-claude-model",
+                inputTokens: usage.input_tokens ?? 0,
+                cachedInputTokens: usage.cache_read_input_tokens ?? 0,
+                cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+                outputTokens: usage.output_tokens ?? 0
             )
-            let score = record.totalTokens
-            if score >= (scoreByMessageID[messageID] ?? -1) {
-                bestByMessageID[messageID] = record
-                scoreByMessageID[messageID] = score
+            if record.totalTokens >= best[messageID]?.totalTokens ?? -1 {
+                best[messageID] = record
             }
         }
-        return bestByMessageID.values.sorted { $0.date < $1.date }
+
+        var records: [UsageRecord] { best.values.sorted { $0.date < $1.date } }
+    }
+
+    /// Just the fields Token Stats reads. Everything else in the line, including message
+    /// content, is skipped without being built.
+    private struct LogLine: Decodable {
+        let type: String?
+        let timestamp: String?
+        let message: Message?
+
+        struct Message: Decodable {
+            let id: String?
+            let model: String?
+            let usage: Usage?
+        }
+
+        struct Usage: Decodable {
+            let input_tokens: Int?
+            let cache_creation_input_tokens: Int?
+            let cache_read_input_tokens: Int?
+            let output_tokens: Int?
+        }
     }
 }
 
