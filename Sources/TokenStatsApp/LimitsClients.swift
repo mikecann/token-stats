@@ -74,8 +74,11 @@ enum ClaudeLimitsClient {
             // two programs renewing the same login can sign each other out.
             do {
                 oauth = try await renew(service: service, folder: folder)
+            } catch let error as RenewalError {
+                account.error = ClaudeLoginRenewal.failureMessage(status: error.status, reason: error.reason)
+                return account
             } catch {
-                account.error = "Sign-in expired and couldn't be renewed (\(error.localizedDescription)). Remove this login and add it again."
+                account.error = ClaudeLoginRenewal.failureMessage(status: 0, reason: error.localizedDescription)
                 return account
             }
         } else if let expires, expires < Date() {
@@ -134,17 +137,16 @@ enum ClaudeLimitsClient {
             return oauth
         }
         guard let refreshToken = oauth["refreshToken"] as? String, !refreshToken.isEmpty else {
-            throw LimitsError("no refresh token saved")
+            throw RenewalError(status: 400, reason: "no refresh token saved")
         }
-        var request = ClaudeLoginRenewal.request(refreshToken: refreshToken, scopes: oauth["scopes"] as? [String])
-        request.setValue("claude-code/\(claudeVersion)", forHTTPHeaderField: "User-Agent")
+        let request = ClaudeLoginRenewal.request(refreshToken: refreshToken, scopes: oauth["scopes"] as? [String])
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200..<300).contains(status), let renewed = ClaudeLoginRenewal.renewed(saved, with: json, now: Date()) else {
             let reason = json["error_description"] as? String ?? json["error"] as? String
                 ?? ((json["error"] as? [String: Any])?["message"] as? String)
-            throw LimitsError("Anthropic returned HTTP \(status)\(reason.map { ": \($0)" } ?? "")")
+            throw RenewalError(status: status, reason: reason)
         }
         try save(renewed, service: service)
         guard let stored = readSaved(service: service)?["claudeAiOauth"] as? [String: Any],
@@ -212,6 +214,12 @@ final class FolderLock: @unchecked Sendable {
         flock(descriptor, LOCK_UN)
         close(descriptor)
     }
+}
+
+/// Why Anthropic turned a renewal down, so the card can say whether to wait or sign in again.
+struct RenewalError: Error {
+    let status: Int
+    let reason: String?
 }
 
 struct LimitsError: LocalizedError {

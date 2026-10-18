@@ -385,8 +385,20 @@ enum ClaudeLoginRenewal {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // Not Claude Code's User-Agent: this endpoint answers 429 to that straight away.
+        request.setValue("Token Stats", forHTTPHeaderField: "User-Agent")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return request
+    }
+
+    /// Anthropic turning the refresh token down means signing in again. Anything else, like a
+    /// rate limit or no connection, is worth another go at the next check.
+    static func failureMessage(status: Int, reason: String?) -> String {
+        if [400, 401, 403].contains(status) {
+            return "Sign-in expired and couldn't be renewed (\(reason ?? "HTTP \(status)")). Remove this login and add it again."
+        }
+        let detail = status > 0 ? "HTTP \(status)\(reason.map { ": \($0)" } ?? "")" : reason ?? "no answer"
+        return "Couldn't renew this sign-in just now (\(detail)). Token Stats tries again in a few minutes."
     }
 
     /// The saved login with the new tokens and expiry in place, or nil if the answer has no token.

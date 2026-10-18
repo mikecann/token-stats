@@ -8,6 +8,8 @@ final class ClaudeLoginRenewalTests: XCTestCase {
         XCTAssertEqual(request.url?.absoluteString, "https://platform.claude.com/v1/oauth/token")
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        // Anthropic answers 429 straight away to a claude-code User-Agent on this endpoint.
+        XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "Token Stats")
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: String])
         XCTAssertEqual(body, [
             "grant_type": "refresh_token",
@@ -53,6 +55,21 @@ final class ClaudeLoginRenewalTests: XCTestCase {
         let renewed = ClaudeLoginRenewal.renewed(saved, with: ["access_token": "b", "expires_in": 60], now: Date())
         XCTAssertEqual((renewed?["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String, "keep")
         XCTAssertNil(ClaudeLoginRenewal.renewed(saved, with: ["error": "invalid_grant"], now: Date()))
+    }
+
+    func testOnlyARejectedLoginSaysToAddItAgain() {
+        XCTAssertEqual(
+            ClaudeLoginRenewal.failureMessage(status: 400, reason: "invalid_grant"),
+            "Sign-in expired and couldn't be renewed (invalid_grant). Remove this login and add it again."
+        )
+        XCTAssertEqual(
+            ClaudeLoginRenewal.failureMessage(status: 429, reason: "Rate limited. Please try again later."),
+            "Couldn't renew this sign-in just now (HTTP 429: Rate limited. Please try again later.). Token Stats tries again in a few minutes."
+        )
+        XCTAssertEqual(
+            ClaudeLoginRenewal.failureMessage(status: 0, reason: "The Internet connection appears to be offline."),
+            "Couldn't renew this sign-in just now (The Internet connection appears to be offline.). Token Stats tries again in a few minutes."
+        )
     }
 
     func testKeychainAccountComesFromSecurityAttributes() {
