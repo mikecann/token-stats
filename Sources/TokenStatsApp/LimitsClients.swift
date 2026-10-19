@@ -63,13 +63,35 @@ enum ClaudeLimitsClient {
 
     static func fetch(service: String, label: String, folder: URL?) async -> LimitAccount {
         var account = LimitAccount(id: "claude:\(service)", provider: .claude, source: label, folder: folder)
-        guard let oauth = readOAuth(service: service), let token = oauth["accessToken"] as? String else {
+        guard var oauth = readSaved(service: service)?["claudeAiOauth"] as? [String: Any] else {
             account.error = "Couldn't read this Claude login from the Keychain"
             return account
         }
         account.plan = LimitFormat.plan(oauth["subscriptionType"] as? String)
-        if let expires = LimitFormat.isoDate(oauth["expiresAt"]), expires < Date() {
-            account.error = "Sign-in expired. Run claude with this account once to refresh it."
+        let expires = LimitFormat.isoDate(oauth["expiresAt"])
+        let configDir = ClaudeLoginRenewal.configDir(
+            service: service, folder: folder,
+            home: FileManager.default.homeDirectoryForCurrentUser, environment: ProcessInfo.processInfo.environment
+        )
+        if let configDir, let expires, expires < Date().addingTimeInterval(ClaudeLoginRenewal.margin) {
+            do {
+                oauth = try await renew(service: service, configDir: configDir)
+            } catch {
+                // Inside the early-renewal window the current login still works, so keep using it
+                // and try again at the next check. Only a lapsed one is worth an error.
+                if expires < Date() {
+                    let failure = error as? RenewalError ?? RenewalError(status: 0, reason: error.localizedDescription)
+                    let signInAgain = folder == nil ? "Run claude to sign in again." : "Remove this login and add it again."
+                    account.error = LoginRenewal.failureMessage(status: failure.status, reason: failure.reason, signInAgain: signInAgain)
+                    return account
+                }
+            }
+        } else if let expires, expires < Date() {
+            account.error = "Sign-in expired. Run claude once to refresh it."
+            return account
+        }
+        guard let token = oauth["accessToken"] as? String else {
+            account.error = "Couldn't read this Claude login from the Keychain"
             return account
         }
         do {
@@ -100,11 +122,74 @@ enum ClaudeLimitsClient {
     /// Claude Code writes its login with Apple's `security` tool, so that tool is the one the
     /// Keychain trusts to read it back. Going through it means no "allow access" prompts, even
     /// after Claude Code rewrites the item when it refreshes the login.
-    private static func readOAuth(service: String) -> [String: Any]? {
+    private static func readSaved(service: String) -> [String: Any]? {
         let result = ProcessRunner.run(["/usr/bin/security", "find-generic-password", "-s", service, "-w"], timeout: 15)
-        guard result.status == 0,
-              let saved = try? JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any] else { return nil }
-        return saved["claudeAiOauth"] as? [String: Any]
+        guard result.status == 0 else { return nil }
+        return try? JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any]
+    }
+
+    /// Swaps the refresh token for new tokens and saves them where Claude Code keeps them, under
+    /// Claude Code's own renewal lock. Spending a refresh token twice signs the login out, so
+    /// nothing else (`claude` or `token-stats limits`) may renew this login at the same time.
+    /// A running `claude` notices the login changed and picks the new one up.
+    private static func renew(service: String, configDir: URL) async throws -> [String: Any] {
+        let lock: DirectoryLock
+        do {
+            lock = try await DirectoryLock.acquire(ClaudeLoginRenewal.lockURL(configDir: configDir))
+        } catch {
+            throw RenewalError(status: 0, reason: "Claude Code is renewing it")
+        }
+        defer { lock.release() }
+        guard let saved = readSaved(service: service), let oauth = saved["claudeAiOauth"] as? [String: Any] else {
+            throw LimitsError("couldn't read the login")
+        }
+        // Someone else may have renewed it while this waited for the lock.
+        if let expires = LimitFormat.isoDate(oauth["expiresAt"]), expires > Date().addingTimeInterval(ClaudeLoginRenewal.margin) {
+            return oauth
+        }
+        guard let refreshToken = oauth["refreshToken"] as? String, !refreshToken.isEmpty else {
+            throw RenewalError(status: 400, reason: "no refresh token saved")
+        }
+        let account = keychainAccount(service: service)
+        let request = ClaudeLoginRenewal.request(refreshToken: refreshToken, scopes: oauth["scopes"] as? [String])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        guard (200..<300).contains(status), let renewed = ClaudeLoginRenewal.renewed(saved, with: json, now: Date()) else {
+            let reason = json["error_description"] as? String ?? json["error"] as? String
+                ?? ((json["error"] as? [String: Any])?["message"] as? String)
+            throw RenewalError(status: status, reason: reason)
+        }
+        try save(renewed, service: service, account: account)
+        guard let stored = readSaved(service: service)?["claudeAiOauth"] as? [String: Any],
+              stored["accessToken"] as? String == (renewed["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String else {
+            throw RenewalError(status: 0, reason: "the Keychain didn't keep the renewed login")
+        }
+        return stored
+    }
+
+    /// The `acct` of the saved Keychain item, so the save updates it instead of adding another.
+    private static func keychainAccount(service: String) -> String {
+        let attributes = ProcessRunner.run(["/usr/bin/security", "find-generic-password", "-s", service], timeout: 15)
+        return ClaudeLoginRenewal.keychainAccount(fromAttributes: attributes.output) ?? NSUserName()
+    }
+
+    /// Writes the login back the way Claude Code does: `security -i` with the login hex-encoded
+    /// on stdin, so it stays out of the process list.
+    ///
+    /// A login that also holds MCP server sign-ins can run to several KB, past the one 4032-byte
+    /// line `security -i` reads (and its password prompt stops at 128 characters). Claude Code
+    /// passes those as an argument, and so does this. That's no wider than what can already read
+    /// the item: any process running as this user can read it with `security` without a prompt.
+    /// It only adds a brief window where another account on the Mac could see it with `ps`.
+    private static func save(_ saved: [String: Any], service: String, account: String) throws {
+        let secret = try ClaudeLoginRenewal.asciiJSON(saved)
+        let command = ClaudeLoginRenewal.saveCommand(account: account, service: service, secret: secret)
+        let result = command.utf8.count <= ClaudeLoginRenewal.saveLineLimit
+            ? ProcessRunner.run(["/usr/bin/security", "-i"], input: Data(command.utf8), timeout: 15)
+            : ProcessRunner.run(["/usr/bin/security", "add-generic-password", "-U", "-a", account, "-s", service,
+                                 "-X", secret.map { String(format: "%02x", $0) }.joined()], timeout: 15)
+        guard result.status == 0 else { throw RenewalError(status: 0, reason: "couldn't save the renewed login to the Keychain") }
     }
 
     private static func get(_ url: String, token: String) async throws -> [String: Any] {
@@ -125,6 +210,69 @@ enum ClaudeLimitsClient {
         }
         return object
     }
+}
+
+/// A lock that is a folder, the kind Claude Code takes (through proper-lockfile) while it renews
+/// a login. Making the folder takes the lock. One older than a minute was left by a process
+/// that died and is taken over, the same rule Claude Code uses.
+final class DirectoryLock: @unchecked Sendable {
+    static let stale: TimeInterval = 60
+    private let url: URL
+
+    private init(url: URL) { self.url = url }
+
+    static func acquire(_ url: URL, timeout: TimeInterval = 15) async throws -> DirectoryLock {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if mkdir(url.path, 0o755) == 0 { return DirectoryLock(url: url) }
+            guard errno == EEXIST else { throw LimitsError("couldn't make \(url.lastPathComponent)") }
+            let modified = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? Date()
+            if Date().timeIntervalSince(modified) > stale {
+                rmdir(url.path)
+                continue
+            }
+            guard Date() < deadline else { throw LimitsError("\(url.lastPathComponent) is held") }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    func release() { rmdir(url.path) }
+}
+
+/// An exclusive `flock` on a file, the kind Grok takes on `auth.json.lock`. The file stays put
+/// and the holder writes who it is into it.
+final class FileLock: @unchecked Sendable {
+    private let descriptor: Int32
+
+    private init(descriptor: Int32) { self.descriptor = descriptor }
+
+    static func acquire(_ url: URL, contents: String, timeout: TimeInterval = 30) async throws -> FileLock {
+        let descriptor = open(url.path, O_CREAT | O_RDWR, 0o644)
+        guard descriptor >= 0 else { throw LimitsError("couldn't open \(url.lastPathComponent)") }
+        let deadline = Date().addingTimeInterval(timeout)
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            guard Date() < deadline else {
+                close(descriptor)
+                throw LimitsError("\(url.lastPathComponent) is held")
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        ftruncate(descriptor, 0)
+        let bytes = Array(contents.utf8)
+        _ = bytes.withUnsafeBytes { pwrite(descriptor, $0.baseAddress, $0.count, 0) }
+        return FileLock(descriptor: descriptor)
+    }
+
+    func release() {
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
+    }
+}
+
+/// Why Anthropic turned a renewal down, so the card can say whether to wait or sign in again.
+struct RenewalError: Error {
+    let status: Int
+    let reason: String?
 }
 
 struct LimitsError: LocalizedError {
@@ -225,19 +373,29 @@ enum JSONRPCSession {
 }
 
 /// Reads Grok Build's monthly credit usage, the same call its `/usage` command makes, using
-/// the login in `~/.grok/auth.json`. Token Stats never refreshes or rewrites that login.
+/// the login in `~/.grok/auth.json`, and renews that login the way Grok does when it's close
+/// to running out.
 enum GrokLimitsClient {
     static var authURL: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok/auth.json") }
 
     static func fetch() async -> LimitAccount? {
         guard let data = try? Data(contentsOf: authURL),
               let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let login = saved.values.compactMap({ $0 as? [String: Any] }).first(where: { $0["key"] is String }),
-              let token = login["key"] as? String else { return nil }
+              let entry = saved.first(where: { ($0.value as? [String: Any])?["key"] is String }),
+              let login = entry.value as? [String: Any],
+              var token = login["key"] as? String else { return nil }
         var account = LimitAccount(id: "grok:~/.grok", provider: .grok, email: login["email"] as? String, source: "~/.grok")
-        if let expires = LimitFormat.isoDate(login["expires_at"]), expires < Date() {
-            account.error = "Sign-in expired. Run grok once to refresh it."
-            return account
+        if let expires = LimitFormat.isoDate(login["expires_at"]), expires < Date().addingTimeInterval(GrokLoginRenewal.margin) {
+            do {
+                token = try await renew(entry: entry.key)
+            } catch {
+                // Still valid for a few minutes, so carry on with it and try again at the next check.
+                if expires < Date() {
+                    let failure = error as? RenewalError ?? RenewalError(status: 0, reason: error.localizedDescription)
+                    account.error = LoginRenewal.failureMessage(status: failure.status, reason: failure.reason, signInAgain: "Run grok login to sign in again.")
+                    return account
+                }
+            }
         }
         var request = URLRequest(url: URL(string: "https://cli-chat-proxy.grok.com/v1/billing?format=credits")!, timeoutInterval: 20)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -257,6 +415,59 @@ enum GrokLimitsClient {
             account.error = error.localizedDescription
         }
         return account
+    }
+
+    /// Renews the login under Grok's own lock on `auth.json.lock`, re-reading `auth.json` first in
+    /// case Grok renewed it meanwhile, and saves it back the way Grok does (a new file renamed into
+    /// place). A running Grok re-reads the file when it next renews, so it picks this one up.
+    private static func renew(entry: String) async throws -> String {
+        let lockURL = authURL.deletingLastPathComponent().appendingPathComponent("auth.json.lock")
+        let lock: FileLock
+        do {
+            lock = try await FileLock.acquire(lockURL, contents: GrokLoginRenewal.lockContents(pid: getpid(), now: Date()))
+        } catch {
+            throw RenewalError(status: 0, reason: "Grok is renewing it")
+        }
+        defer { lock.release() }
+        guard let data = try? Data(contentsOf: authURL),
+              var saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let login = saved[entry] as? [String: Any] else { throw RenewalError(status: 0, reason: "couldn't read the login") }
+        if let expires = LimitFormat.isoDate(login["expires_at"]), expires > Date().addingTimeInterval(GrokLoginRenewal.margin),
+           let key = login["key"] as? String {
+            return key
+        }
+        guard let refreshToken = login["refresh_token"] as? String, !refreshToken.isEmpty,
+              let clientID = login["oidc_client_id"] as? String else {
+            throw RenewalError(status: 400, reason: "no refresh token saved")
+        }
+        let issuer = (login["oidc_issuer"] as? String ?? "https://auth.x.ai").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let request = GrokLoginRenewal.request(tokenEndpoint: await tokenEndpoint(issuer: issuer), refreshToken: refreshToken, clientID: clientID)
+        let (body, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+        guard (200..<300).contains(status), let renewed = GrokLoginRenewal.renewed(login, with: json, now: Date()),
+              let key = renewed["key"] as? String else {
+            throw RenewalError(status: status, reason: json["error_description"] as? String ?? json["error"] as? String)
+        }
+        saved[entry] = renewed
+        let output = try JSONSerialization.data(withJSONObject: saved, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        let temporary = authURL.deletingLastPathComponent().appendingPathComponent(".auth.json.token-stats-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: temporary.path, contents: output, attributes: [.posixPermissions: 0o600]),
+              rename(temporary.path, authURL.path) == 0 else {
+            try? FileManager.default.removeItem(at: temporary)
+            throw RenewalError(status: 0, reason: "couldn't save the renewed login")
+        }
+        return key
+    }
+
+    /// Where the issuer takes refresh grants, from its OpenID configuration.
+    private static func tokenEndpoint(issuer: String) async -> URL {
+        let fallback = URL(string: "\(issuer)/oauth2/token")!
+        guard let url = URL(string: "\(issuer)/.well-known/openid-configuration"),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let endpoint = (json["token_endpoint"] as? String).flatMap(URL.init(string:)) else { return fallback }
+        return endpoint
     }
 
     private static let grokVersion: String = {

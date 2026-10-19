@@ -158,7 +158,7 @@ final class CLIUpdater: ObservableObject {
 
 enum ProcessRunner {
     /// Runs a command with the user's tool folders on PATH and returns its exit status and combined output.
-    static func run(_ command: [String], environment extra: [String: String] = [:], timeout: TimeInterval) -> (status: Int32, output: String) {
+    static func run(_ command: [String], environment extra: [String: String] = [:], input: Data? = nil, timeout: TimeInterval) -> (status: Int32, output: String) {
         guard let first = command.first else { return (-1, "") }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: first)
@@ -170,11 +170,16 @@ enum ProcessRunner {
             + (environment["PATH"] ?? "").split(separator: ":").map(String.init)).joined(separator: ":")
         extra.forEach { environment[$0] = $1 }
         process.environment = environment
-        process.standardInput = FileHandle.nullDevice
+        let stdin = input.map { _ in Pipe() }
+        process.standardInput = stdin ?? FileHandle.nullDevice
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
         do { try process.run() } catch { return (-1, error.localizedDescription) }
+        if let stdin, let input {
+            try? stdin.fileHandleForWriting.write(contentsOf: input)
+            try? stdin.fileHandleForWriting.close()
+        }
 
         let deadline = DispatchWorkItem { if process.isRunning { process.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
