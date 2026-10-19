@@ -427,12 +427,27 @@ enum ClaudeLoginRenewal {
         oauth["accessToken"] = access
         if let refresh = response["refresh_token"] as? String, !refresh.isEmpty { oauth["refreshToken"] = refresh }
         oauth["expiresAt"] = Int((now.timeIntervalSince1970 + lifetime) * 1000)
+        // Claude Code warns about, and gives up on, a login whose saved refresh-token end date
+        // has passed, so it has to move whenever Anthropic sends a new one.
+        if let refreshLifetime = (response["refresh_token_expires_in"] as? NSNumber)?.doubleValue {
+            oauth["refreshTokenExpiresAt"] = Int((now.timeIntervalSince1970 + refreshLifetime) * 1000)
+        }
         if let scope = response["scope"] as? String, !scope.isEmpty {
             oauth["scopes"] = scope.split(separator: " ").map(String.init)
         }
         var updated = saved
         updated["claudeAiOauth"] = oauth
         return updated
+    }
+
+    /// A refresh token only lasts so long, and past that nothing can renew the login. Claude Code
+    /// starts warning three days out, and so does the card.
+    static func endingNote(refreshTokenExpiresAt: Date?, now: Date, signInAgain: String) -> String? {
+        guard let refreshTokenExpiresAt else { return nil }
+        let left = refreshTokenExpiresAt.timeIntervalSince(now)
+        guard left > 0, left <= 3 * 86_400 else { return nil }
+        let days = Int((left / 86_400).rounded(.up))
+        return "This sign-in ends in \(days) day\(days == 1 ? "" : "s"). \(signInAgain)"
     }
 
     /// JSON with anything outside ASCII escaped, because `security -w` prints a secret holding

@@ -57,6 +57,30 @@ final class ClaudeLoginRenewalTests: XCTestCase {
         XCTAssertNil(ClaudeLoginRenewal.renewed(saved, with: ["error": "invalid_grant"], now: Date()))
     }
 
+    func testRenewedLoginSavesWhenTheRefreshTokenEndsLikeClaudeCode() throws {
+        let saved: [String: Any] = ["claudeAiOauth": ["accessToken": "a", "refreshToken": "r", "expiresAt": 1, "refreshTokenExpiresAt": 5]]
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let extended = ClaudeLoginRenewal.renewed(saved, with: ["access_token": "b", "expires_in": 60, "refresh_token_expires_in": 2_592_000], now: now)
+        XCTAssertEqual((extended?["claudeAiOauth"] as? [String: Any])?["refreshTokenExpiresAt"] as? Int, 1_802_592_000_000)
+
+        // Claude Code keeps the saved date when the answer doesn't carry a new one.
+        let kept = ClaudeLoginRenewal.renewed(saved, with: ["access_token": "b", "expires_in": 60], now: now)
+        XCTAssertEqual((kept?["claudeAiOauth"] as? [String: Any])?["refreshTokenExpiresAt"] as? Int, 5)
+    }
+
+    func testCardWarnsInTheLastThreeDaysBeforeASignInEnds() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let fix = "Run claude and sign in again to keep it."
+
+        XCTAssertNil(ClaudeLoginRenewal.endingNote(refreshTokenExpiresAt: now.addingTimeInterval(4 * 86_400), now: now, signInAgain: fix))
+        XCTAssertEqual(ClaudeLoginRenewal.endingNote(refreshTokenExpiresAt: now.addingTimeInterval(2.5 * 86_400), now: now, signInAgain: fix),
+                       "This sign-in ends in 3 days. Run claude and sign in again to keep it.")
+        XCTAssertEqual(ClaudeLoginRenewal.endingNote(refreshTokenExpiresAt: now.addingTimeInterval(3_600), now: now, signInAgain: fix),
+                       "This sign-in ends in 1 day. Run claude and sign in again to keep it.")
+        XCTAssertNil(ClaudeLoginRenewal.endingNote(refreshTokenExpiresAt: nil, now: now, signInAgain: fix))
+    }
+
     func testOnlyARejectedLoginSaysToSignInAgain() {
         XCTAssertEqual(
             LoginRenewal.failureMessage(status: 400, reason: "invalid_grant", signInAgain: "Remove this login and add it again."),
