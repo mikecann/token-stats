@@ -104,6 +104,12 @@ enum ClaudeLimitsClient {
             }
             account.windows = ClaudeLimitsParser.windows(from: usageJSON)
             account.notes = ClaudeLimitsParser.notes(from: usageJSON)
+            if let ending = ClaudeLoginRenewal.endingNote(
+                refreshTokenExpiresAt: LimitFormat.isoDate(oauth["refreshTokenExpiresAt"]), now: Date(),
+                signInAgain: folder == nil ? "Run claude and sign in again to keep it." : "Remove this login and add it again to keep it."
+            ) {
+                account.notes.append(ending)
+            }
             if let profile = await profile { ClaudeLimitsParser.apply(profile: profile, to: &account) }
         } catch {
             account.error = error.localizedDescription
