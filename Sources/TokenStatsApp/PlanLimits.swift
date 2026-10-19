@@ -57,6 +57,9 @@ struct LimitAccount: Identifiable, Equatable, Sendable {
     var source: String
     /// The login folder Token Stats made for this account, if it made one.
     var folder: URL? = nil
+    /// The actual config directory, including main logins and environment overrides.
+    /// Nil when a saved Claude login's directory is unknown.
+    var configDir: URL? = nil
     var windows: [LimitWindow] = []
     var notes: [String] = []
     var error: String?

@@ -7,6 +7,7 @@ import Security
 enum CodexLimitsClient {
     static func fetch(home: URL, label: String, folder: URL?) async -> LimitAccount {
         var account = LimitAccount(id: "codex:\(home.path)", provider: .codex, source: label, folder: folder)
+        account.configDir = home
         guard let executable = CommandLocator.find("codex") else {
             account.error = "Couldn't find the codex command"
             return account
@@ -63,16 +64,17 @@ enum ClaudeLimitsClient {
 
     static func fetch(service: String, label: String, folder: URL?) async -> LimitAccount {
         var account = LimitAccount(id: "claude:\(service)", provider: .claude, source: label, folder: folder)
+        let configDir = ClaudeLoginRenewal.configDir(
+            service: service, folder: folder,
+            home: FileManager.default.homeDirectoryForCurrentUser, environment: ProcessInfo.processInfo.environment
+        )
+        account.configDir = configDir
         guard var oauth = readSaved(service: service)?["claudeAiOauth"] as? [String: Any] else {
             account.error = "Couldn't read this Claude login from the Keychain"
             return account
         }
         account.plan = LimitFormat.plan(oauth["subscriptionType"] as? String)
         let expires = LimitFormat.isoDate(oauth["expiresAt"])
-        let configDir = ClaudeLoginRenewal.configDir(
-            service: service, folder: folder,
-            home: FileManager.default.homeDirectoryForCurrentUser, environment: ProcessInfo.processInfo.environment
-        )
         if let configDir, let expires, expires < Date().addingTimeInterval(ClaudeLoginRenewal.margin) {
             do {
                 oauth = try await renew(service: service, configDir: configDir)
@@ -100,7 +102,7 @@ enum ClaudeLimitsClient {
             let usageJSON = try await usage
             if ProcessInfo.processInfo.environment["TOKEN_STATS_DEBUG"] == "1",
                let data = try? JSONSerialization.data(withJSONObject: usageJSON, options: [.prettyPrinted, .sortedKeys]) {
-                print(String(decoding: data, as: UTF8.self))
+                FileHandle.standardError.write(data + Data("\n".utf8))
             }
             account.windows = ClaudeLimitsParser.windows(from: usageJSON)
             account.notes = ClaudeLimitsParser.notes(from: usageJSON)
@@ -391,6 +393,7 @@ enum GrokLimitsClient {
               let login = entry.value as? [String: Any],
               var token = login["key"] as? String else { return nil }
         var account = LimitAccount(id: "grok:~/.grok", provider: .grok, email: login["email"] as? String, source: "~/.grok")
+        account.configDir = authURL.deletingLastPathComponent()
         if let expires = LimitFormat.isoDate(login["expires_at"]), expires < Date().addingTimeInterval(GrokLoginRenewal.margin) {
             do {
                 token = try await renew(entry: entry.key)
@@ -411,7 +414,7 @@ enum GrokLimitsClient {
             let (body, response) = try await URLSession.shared.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             if ProcessInfo.processInfo.environment["TOKEN_STATS_DEBUG"] == "1" {
-                print("grok billing HTTP \(status): \(String(decoding: body.prefix(4000), as: UTF8.self))")
+                FileHandle.standardError.write(Data("grok billing HTTP \(status): \(String(decoding: body.prefix(4000), as: UTF8.self))\n".utf8))
             }
             guard (200..<300).contains(status), let json = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
                 throw LimitsError("Grok returned HTTP \(status)")
@@ -499,6 +502,7 @@ enum MuseLimitsClient {
         if let cached = await cache.fresh(within: interval) { return cached }
 
         var account = LimitAccount(id: "muse:meta", provider: .muse, email: meta["user_email"] as? String, source: "~/.config/muse")
+        account.configDir = authURL.deletingLastPathComponent()
         guard let token = readToken() else {
             account.error = "Couldn't read Muse's login from the Keychain"
             return account
@@ -531,7 +535,7 @@ enum MuseLimitsClient {
                 // Never print the minted key itself.
                 let shape = json.map { MuseLimitsParser.redacted($0) } ?? ["body": String(decoding: body.prefix(300), as: UTF8.self)]
                 let text = (try? JSONSerialization.data(withJSONObject: shape, options: [.sortedKeys])).map { String(decoding: $0, as: UTF8.self) } ?? ""
-                print("muse \(method) HTTP \(lastStatus): \(text)")
+                FileHandle.standardError.write(Data("muse \(method) HTTP \(lastStatus): \(text)\n".utf8))
             }
             if (200..<300).contains(lastStatus), let json { return json }
             if lastStatus != 404 && lastStatus != 405 { break }
