@@ -2,15 +2,16 @@ import Foundation
 
 /// The versioned format shared by the CLI and the app's limits snapshot.
 enum LimitsJSON {
-    static func encode(_ accounts: [LimitAccount], generatedAt: Date) throws -> Data {
+    /// `complete` is false when some providers hadn't answered yet, so the list may be missing accounts.
+    static func encode(_ accounts: [LimitAccount], generatedAt: Date, complete: Bool = true) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(Document(generatedAt: generatedAt, accounts: accounts.map { Account(account: $0) }))
+        return try encoder.encode(Document(generatedAt: generatedAt, complete: complete, accounts: accounts.map { Account(account: $0) }))
     }
 
+    /// Always writes, even with no accounts, so removing the last login doesn't leave a stale file behind.
     static func writeSnapshot(_ accounts: [LimitAccount], generatedAt: Date, to url: URL) throws {
-        guard !accounts.isEmpty else { return }
         let data = try encode(accounts, generatedAt: generatedAt)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         // Foundation writes a temporary file beside the destination, then renames it over it.
@@ -20,6 +21,7 @@ enum LimitsJSON {
     private struct Document: Encodable {
         let version = 1
         let generatedAt: Date
+        let complete: Bool
         let accounts: [Account]
     }
 

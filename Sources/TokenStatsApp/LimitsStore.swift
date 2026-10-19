@@ -328,14 +328,16 @@ enum LimitsCommand {
             let deadline = Date().addingTimeInterval(60)
             while store.isRefreshing, Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
             if json {
-                if store.isRefreshing {
+                let complete = !store.isRefreshing
+                if !complete {
                     FileHandle.standardError.write(Data("Some accounts didn't answer within 60s. A Keychain prompt may be waiting.\n".utf8))
                 }
                 if let notice = store.notice { FileHandle.standardError.write(Data("\(notice)\n".utf8)) }
                 do {
-                    let data = try LimitsJSON.encode(store.accounts, generatedAt: Date())
+                    let data = try LimitsJSON.encode(store.accounts, generatedAt: Date(), complete: complete)
                     print(String(decoding: data, as: UTF8.self))
-                    exit(0)
+                    // Still print what we have, but don't let scripts mistake a partial list for the full one.
+                    exit(complete ? 0 : 2)
                 } catch {
                     FileHandle.standardError.write(Data("Couldn't encode plan limits: \(error.localizedDescription)\n".utf8))
                     exit(1)

@@ -68,7 +68,7 @@ final class LimitsJSONTests: XCTestCase {
     func testEncodingIsDeterministicWithSortedKeysAndEmptyAccounts() throws {
         let data = try LimitsJSON.encode([], generatedAt: now)
         XCTAssertEqual(String(decoding: data, as: UTF8.self),
-                       #"{"accounts":[],"generatedAt":"1970-01-01T00:00:00Z","version":1}"#)
+                       #"{"accounts":[],"complete":true,"generatedAt":"1970-01-01T00:00:00Z","version":1}"#)
         XCTAssertEqual(data, try LimitsJSON.encode([], generatedAt: now))
     }
 
@@ -97,22 +97,31 @@ final class LimitsJSONTests: XCTestCase {
         XCTAssertEqual(window["resetsAt"] as? String, "2026-10-19T04:34:56Z")
     }
 
-    func testSnapshotCreatesDirectoryReplacesDocumentAndSkipsEmptyAccounts() throws {
+    func testSnapshotCreatesDirectoryAndReplacesDocumentEvenWhenEmpty() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("Token Stats/limits.json")
         let account = LimitAccount(id: "codex:main", provider: .codex, source: "~/.codex")
 
         try LimitsJSON.writeSnapshot([], generatedAt: now, to: url)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path))
+        XCTAssertEqual(try Data(contentsOf: url), try LimitsJSON.encode([], generatedAt: now))
         try LimitsJSON.writeSnapshot([account], generatedAt: now, to: url)
         XCTAssertEqual(try Data(contentsOf: url), try LimitsJSON.encode([account], generatedAt: now))
         let later = now.addingTimeInterval(3600)
         try LimitsJSON.writeSnapshot([account], generatedAt: later, to: url)
         let latest = try Data(contentsOf: url)
         XCTAssertEqual(latest, try LimitsJSON.encode([account], generatedAt: later))
-        try LimitsJSON.writeSnapshot([], generatedAt: now, to: url)
-        XCTAssertEqual(try Data(contentsOf: url), latest)
+        // Removing the last login must not leave the old accounts behind.
+        try LimitsJSON.writeSnapshot([], generatedAt: later, to: url)
+        XCTAssertNotEqual(try Data(contentsOf: url), latest)
+        XCTAssertEqual(try Data(contentsOf: url), try LimitsJSON.encode([], generatedAt: later))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path), ["limits.json"])
+    }
+
+    func testIncompleteRefreshIsMarkedInTheDocument() throws {
+        let complete = try JSONSerialization.jsonObject(with: LimitsJSON.encode([], generatedAt: now)) as? [String: Any]
+        let partial = try JSONSerialization.jsonObject(with: LimitsJSON.encode([], generatedAt: now, complete: false)) as? [String: Any]
+        XCTAssertEqual(complete?["complete"] as? Bool, true)
+        XCTAssertEqual(partial?["complete"] as? Bool, false)
     }
 }

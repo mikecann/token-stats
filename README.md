@@ -103,7 +103,7 @@ Homebrew installation. There is a pure Swift fallback, so it isn't required.
 
 `token-stats limits --json` prints the same numbers as JSON, so scripts and Claude Code hooks can use them. You can add a provider too, like `token-stats limits claude --json`.
 
-While the app is running it also writes the latest numbers to `~/Library/Application Support/Token Stats/limits.json` after every refresh. That way a script can just read the file rather than asking every provider again. I use it in [delegate](https://github.com/mikecann/delegate) to work out which of my accounts has the most room left. Check `generatedAt` to see how old it is.
+While the app is running it also writes the latest numbers to `~/Library/Application Support/Token Stats/limits.json` after every refresh. That way a script can just read the file rather than asking every provider again. I use it in [delegate](https://github.com/mikecann/delegate) to work out which of my accounts has the most room left. Check `generatedAt` to see how old it is. If some provider didn't answer within a minute, `complete` is `false` and the command exits with 2, so a script doesn't mistake a partial list for the whole thing.
 
 Each account has its `provider`, `plan`, `email`, `configDir` (the folder its login lives in) and a list of `windows`. Each window has a `kind` (`five_hour`, `weekly`, `weekly_model`, `daily`, `monthly`, `allowance` or `other`), its `remainingPercent` and when it `resetsAt`. Anything Token Stats doesn't know is `null`.
 
