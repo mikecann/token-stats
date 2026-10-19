@@ -99,6 +99,14 @@ Homebrew installation. There is a pure Swift fallback, so it isn't required.
 - **More accounts:** choose **Add account** in the main window. Token Stats makes a folder for the login under `~/Library/Application Support/Token Stats/Accounts` and opens Terminal on `codex login` or `claude auth login` pointed at it. Switch accounts in the browser first if it picks the wrong one. The new account shows up by itself a few seconds after you finish signing in. To use that account yourself, run `CODEX_HOME=<folder> codex` or `CLAUDE_CONFIG_DIR=<folder> claude`.
 - An expired Claude login shows a warning until you run `claude` with that account again. Token Stats never refreshes or rewrites anyone's login.
 
+### Reading the limits from a script
+
+`token-stats limits --json` prints the same numbers as JSON, so scripts and Claude Code hooks can use them. You can add a provider too, like `token-stats limits claude --json`.
+
+While the app is running it also writes the latest numbers to `~/Library/Application Support/Token Stats/limits.json` after every refresh. That way a script can just read the file rather than asking every provider again. I use it in [delegate](https://github.com/mikecann/delegate) to work out which of my accounts has the most room left. Check `generatedAt` to see how old it is.
+
+Each account has its `provider`, `plan`, `email`, `configDir` (the folder its login lives in) and a list of `windows`. Each window has a `kind` (`five_hour`, `weekly`, `weekly_model`, `daily`, `monthly`, `allowance` or `other`), its `remainingPercent` and when it `resetsAt`. Anything Token Stats doesn't know is `null`.
+
 ## Keeping the CLIs updated
 
 While it's running, Token Stats updates the agent CLIs once a day: `claude update`, `npm install -g @openai/codex@latest` (only when Codex was installed with npm), `grok update`, and Muse's own launcher with `MUSE_LAUNCHER_INSTALL=1`. They run one at a time. The main window shows what changed last time, and the full output goes to `~/Library/Application Support/Token Stats/cli-updates.log`. Untick **Update CLIs daily** in the main window to stop it.

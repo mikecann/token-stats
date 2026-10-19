@@ -15,6 +15,7 @@ final class LimitsStore: ObservableObject {
     private var timer: Timer?
     private var signInWatcher: Task<Void, Never>?
     private let fileManager = FileManager.default
+    private let snapshotQueue = DispatchQueue(label: "TokenStats.limits-snapshot", qos: .utility)
 
     /// Extra logins made from Token Stats live here, one folder per account.
     var accountsDirectory: URL {
@@ -36,7 +37,7 @@ final class LimitsStore: ObservableObject {
         refresh()
     }
 
-    func refresh(only providers: Set<LimitProvider>? = nil) {
+    func refresh(only providers: Set<LimitProvider>? = nil, persistSnapshot: Bool = true) {
         guard !isRefreshing else { return }
         isRefreshing = true
         let include = { (provider: LimitProvider) in providers?.contains(provider) ?? true }
@@ -77,7 +78,16 @@ final class LimitsStore: ObservableObject {
             let merged = LimitAccountMerger.merge(Array(fresh.values) + accounts.filter { providers?.contains($0.provider) == false })
             accounts = Self.sorted(merged.kept)
             removeDuplicateLogins(merged.duplicates)
-            lastRefresh = Date()
+            let generatedAt = Date()
+            lastRefresh = generatedAt
+            if persistSnapshot {
+                let snapshot = accounts
+                let url = accountsDirectory.deletingLastPathComponent().appendingPathComponent("limits.json")
+                snapshotQueue.async {
+                    // A missing or unwritable snapshot must never interrupt the UI's refresh.
+                    try? LimitsJSON.writeSnapshot(snapshot, generatedAt: generatedAt, to: url)
+                }
+            }
             isRefreshing = false
         }
     }
@@ -310,11 +320,27 @@ enum LimitsCommand {
         }
         guard arguments.first == "--limits" else { return }
         let only = arguments.dropFirst().compactMap { LimitProvider(rawValue: $0.capitalized) }
+        let json = arguments.contains("--json")
         Task { @MainActor in
             let store = LimitsStore.shared
-            store.refresh(only: only.isEmpty ? nil : Set(only))
+            // A filtered CLI query must not replace the app's snapshot with a subset of accounts.
+            store.refresh(only: only.isEmpty ? nil : Set(only), persistSnapshot: false)
             let deadline = Date().addingTimeInterval(60)
             while store.isRefreshing, Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
+            if json {
+                if store.isRefreshing {
+                    FileHandle.standardError.write(Data("Some accounts didn't answer within 60s. A Keychain prompt may be waiting.\n".utf8))
+                }
+                if let notice = store.notice { FileHandle.standardError.write(Data("\(notice)\n".utf8)) }
+                do {
+                    let data = try LimitsJSON.encode(store.accounts, generatedAt: Date())
+                    print(String(decoding: data, as: UTF8.self))
+                    exit(0)
+                } catch {
+                    FileHandle.standardError.write(Data("Couldn't encode plan limits: \(error.localizedDescription)\n".utf8))
+                    exit(1)
+                }
+            }
             if store.isRefreshing { print("(Some accounts didn't answer within 60s. A Keychain prompt may be waiting.)") }
             for account in store.accounts {
                 print("\(account.provider.rawValue) \(account.plan ?? "") \(account.displayName) [\(account.source)]")
