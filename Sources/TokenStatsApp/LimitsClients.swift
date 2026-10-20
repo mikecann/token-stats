@@ -96,25 +96,23 @@ enum ClaudeLimitsClient {
             account.error = "Couldn't read this Claude login from the Keychain"
             return account
         }
+        async let profile = try? get("https://api.anthropic.com/api/oauth/profile", token: token)
+        let usage: Result<[String: Any], Error>
         do {
-            async let usage = get("https://api.anthropic.com/api/oauth/usage", token: token)
-            async let profile = try? get("https://api.anthropic.com/api/oauth/profile", token: token)
-            let usageJSON = try await usage
-            if ProcessInfo.processInfo.environment["TOKEN_STATS_DEBUG"] == "1",
-               let data = try? JSONSerialization.data(withJSONObject: usageJSON, options: [.prettyPrinted, .sortedKeys]) {
-                FileHandle.standardError.write(data + Data("\n".utf8))
-            }
-            account.windows = ClaudeLimitsParser.windows(from: usageJSON)
-            account.notes = ClaudeLimitsParser.notes(from: usageJSON)
-            if let ending = ClaudeLoginRenewal.endingNote(
-                refreshTokenExpiresAt: LimitFormat.isoDate(oauth["refreshTokenExpiresAt"]), now: Date(),
-                signInAgain: folder == nil ? "Run claude and sign in again to keep it." : "Remove this login and add it again to keep it."
-            ) {
-                account.notes.append(ending)
-            }
-            if let profile = await profile { ClaudeLimitsParser.apply(profile: profile, to: &account) }
+            usage = .success(try await get("https://api.anthropic.com/api/oauth/usage", token: token))
         } catch {
-            account.error = error.localizedDescription
+            usage = .failure(error)
+        }
+        if ProcessInfo.processInfo.environment["TOKEN_STATS_DEBUG"] == "1", case .success(let usageJSON) = usage,
+           let data = try? JSONSerialization.data(withJSONObject: usageJSON, options: [.prettyPrinted, .sortedKeys]) {
+            FileHandle.standardError.write(data + Data("\n".utf8))
+        }
+        ClaudeLimitsParser.apply(usage: usage, profile: await profile, to: &account)
+        if account.error == nil, let ending = ClaudeLoginRenewal.endingNote(
+            refreshTokenExpiresAt: LimitFormat.isoDate(oauth["refreshTokenExpiresAt"]), now: Date(),
+            signInAgain: folder == nil ? "Run claude and sign in again to keep it." : "Remove this login and add it again to keep it."
+        ) {
+            account.notes.append(ending)
         }
         return account
     }

@@ -257,6 +257,20 @@ enum ClaudeLimitsParser {
         value == value.rounded() ? "$\(Int(value))" : String(format: "$%.2f", value)
     }
 
+    /// The profile names the account, so it counts even when the usage check is turned away.
+    /// Anthropic answers that one 429 for a while after a busy spell, and without the email
+    /// `delegate` can't tell whose login it is.
+    static func apply(usage: Result<[String: Any], Error>, profile: [String: Any]?, to target: inout LimitAccount) {
+        switch usage {
+        case .success(let json):
+            target.windows = windows(from: json)
+            target.notes = notes(from: json)
+        case .failure(let error):
+            target.error = error.localizedDescription
+        }
+        if let profile { apply(profile: profile, to: &target) }
+    }
+
     static func apply(profile: [String: Any], to target: inout LimitAccount) {
         if let account = profile["account"] as? [String: Any] {
             target.email = account["email_address"] as? String ?? account["email"] as? String ?? target.email

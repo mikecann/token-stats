@@ -75,6 +75,31 @@ final class PlanLimitsTests: XCTestCase {
         XCTAssertEqual(target.plan, "Max")
     }
 
+    func testClaudeProfileStillNamesTheAccountWhenUsageIsRateLimited() throws {
+        var target = LimitAccount(id: "c", provider: .claude, plan: "Pro", source: "~/.claude")
+        ClaudeLimitsParser.apply(
+            usage: .failure(LimitsError("Anthropic returned HTTP 429: Rate limited. Please try again later.")),
+            profile: try json(#"{"account":{"email_address":"mike@example.com"},"organization":{"organization_type":"claude_max"}}"#),
+            to: &target
+        )
+        XCTAssertEqual(target.email, "mike@example.com")
+        XCTAssertEqual(target.plan, "Max")
+        XCTAssertEqual(target.error, "Anthropic returned HTTP 429: Rate limited. Please try again later.")
+        XCTAssertTrue(target.windows.isEmpty)
+    }
+
+    func testClaudeUsageFillsWindowsWhenTheProfileDoesNotAnswer() throws {
+        var target = LimitAccount(id: "c", provider: .claude, source: "~/.claude")
+        ClaudeLimitsParser.apply(
+            usage: .success(try json(#"{"five_hour":{"utilization":12,"resets_at":"2026-10-17T05:00:00Z"}}"#)),
+            profile: nil,
+            to: &target
+        )
+        XCTAssertNil(target.email)
+        XCTAssertNil(target.error)
+        XCTAssertEqual(target.windows.map(\.title), ["5-hour"])
+    }
+
     func testWindowTitlesAndResetText() {
         XCTAssertEqual(LimitFormat.windowTitle(minutes: 300), "5-hour")
         XCTAssertEqual(LimitFormat.windowTitle(minutes: 10080), "Weekly")
