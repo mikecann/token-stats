@@ -341,6 +341,8 @@ enum ClaudeLimitsParser {
             if let readAt = reading?.readAt {
                 let old = now.timeIntervalSince(readAt) >= ClaudeUsagePolicy.gap
                 showReading(note: old ? "Couldn't check usage just now, so these are from \(time(readAt))." : nil)
+            } else {
+                target.notes = ["No usage numbers yet. Token Stats checks again in a few minutes."]
             }
         }
         if let profile { apply(profile: profile, to: &target) }
