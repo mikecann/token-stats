@@ -71,9 +71,10 @@ enum ClaudeUsagePolicy {
         if let pausedUntil = entry.pausedUntil, pausedUntil > now, pausedUntil.timeIntervalSince(now) <= longestPause {
             return .paused(until: pausedUntil)
         }
-        // A check time in the future means the clock moved back, so it doesn't count.
-        if let checkedAt = entry.checkedAt, (0..<gap).contains(now.timeIntervalSince(checkedAt)),
-           lastReading(entry, now: now) != nil {
+        // A check time in the future means the clock moved back, so it doesn't count. The gap holds
+        // even with no reading to show: another process may be asking right now, and asking again
+        // the moment a check fails is what gets a login a 429.
+        if let checkedAt = entry.checkedAt, (0..<gap).contains(now.timeIntervalSince(checkedAt)) {
             return .recent
         }
         return .ask
