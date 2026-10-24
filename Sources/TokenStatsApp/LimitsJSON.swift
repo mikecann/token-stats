@@ -29,7 +29,7 @@ enum LimitsJSON {
         let account: LimitAccount
 
         private enum CodingKeys: String, CodingKey {
-            case provider, plan, email, configDir, label, windows, notice
+            case provider, plan, email, configDir, label, windows, notice, usageReadAt
         }
 
         func encode(to encoder: Encoder) throws {
@@ -43,6 +43,9 @@ enum LimitsJSON {
             try container.encode(account.windows.map { Window(window: $0) }, forKey: .windows)
             let messages = ([account.error].compactMap { $0 } + account.notes).filter { !$0.isEmpty }
             try container.encode(messages.isEmpty ? nil : messages.joined(separator: " · "), forKey: .notice)
+            // When these numbers came from the provider. Claude's can be an earlier reading, and
+            // `notice` says so when that matters; the others are read on every check.
+            try container.encode(account.usageReadAt ?? (account.windows.isEmpty ? nil : account.fetchedAt), forKey: .usageReadAt)
         }
     }
 

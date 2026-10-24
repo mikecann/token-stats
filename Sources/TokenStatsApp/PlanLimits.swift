@@ -29,7 +29,7 @@ enum LimitProvider: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
-struct LimitWindow: Identifiable, Equatable, Sendable {
+struct LimitWindow: Identifiable, Equatable, Codable, Sendable {
     let id: String
     let title: String
     let usedPercent: Double
@@ -64,6 +64,9 @@ struct LimitAccount: Identifiable, Equatable, Sendable {
     var notes: [String] = []
     var error: String?
     var fetchedAt: Date = Date()
+    /// When the numbers shown came back from the provider. Claude sets it because it can show an
+    /// earlier reading; the others read on every check and leave it nil.
+    var usageReadAt: Date? = nil
 
     var displayName: String { email ?? source }
 
@@ -126,6 +129,21 @@ enum LimitFormat {
         let hours = minutes / 60
         if hours < 24 { return "resets in \(hours)h \(minutes % 60)m" }
         return "resets \(date.formatted(.dateTime.weekday(.abbreviated).hour().minute()))"
+    }
+
+    /// A time in the local short style, naming the day when it isn't today:
+    /// "8:12 pm", "Fri 8:12 pm" or "10 Oct at 8:12 pm".
+    static func clockTime(_ date: Date, now: Date = Date(), timeZone: TimeZone = .current, locale: Locale = .current) -> String {
+        var calendar = locale.calendar
+        calendar.timeZone = timeZone
+        if calendar.isDate(date, inSameDayAs: now) {
+            return date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: locale, calendar: calendar, timeZone: timeZone))
+        }
+        let style = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: timeZone)
+        if abs(date.timeIntervalSince(now)) < 6 * 86_400 {
+            return date.formatted(style.weekday(.abbreviated).hour().minute())
+        }
+        return date.formatted(style.day().month(.abbreviated).hour().minute())
     }
 
     /// Parses ISO 8601 dates with or without fractional seconds of any length.
@@ -257,24 +275,84 @@ enum ClaudeLimitsParser {
         value == value.rounded() ? "$\(Int(value))" : String(format: "$%.2f", value)
     }
 
-    /// The profile names the account, so it counts even when the usage check is turned away.
-    /// Anthropic answers that one 429 for a while after a busy spell, and without the email
-    /// `delegate` can't tell whose login it is.
-    static func apply(usage: Result<[String: Any], Error>, profile: [String: Any]?, to target: inout LimitAccount) {
+    /// Sorts a usage answer into what the card does with it. A 429 is a pause, and a 5xx is worth
+    /// showing the last reading for; anything else that isn't a good answer is an error, as before.
+    static func outcome(status: Int, retryAfter: String?, body: Data) -> ClaudeUsageOutcome {
+        if status == 429 { return .rateLimited(retryAfter: retryAfter) }
+        guard (200..<300).contains(status) else {
+            let detail = ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])
+                .flatMap { ($0["error"] as? [String: Any])?["message"] as? String }
+            let message = "Anthropic returned \(status == 401 ? "401: sign in again" : "HTTP \(status)")\(detail.map { ": \($0)" } ?? "")"
+            return (500..<600).contains(status) ? .unavailable(message) : .failed(message)
+        }
+        guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+            return .failed("Unexpected response from Anthropic")
+        }
+        return .read(windows: windows(from: json), notes: notes(from: json))
+    }
+
+    /// No answer at all: no connection or a timeout.
+    static func outcome(error: Error) -> ClaudeUsageOutcome {
+        .unavailable(error.localizedDescription)
+    }
+
+    /// What the card shows for one refresh. A usage check that's turned away, fails or wasn't
+    /// needed shows the last good reading, with a note when it's older than usual, rather than an
+    /// error that reads as if the plan ran out. Only real login problems are errors. The profile
+    /// names the account either way, because without the email `delegate` can't tell whose login
+    /// it is.
+    static func apply(_ usage: ClaudeUsageOutcome, cached: ClaudeUsageCacheEntry?, profile: [String: Any]?, now: Date,
+                      timeZone: TimeZone = .current, locale: Locale = .current, to target: inout LimitAccount) {
+        let reading = ClaudeUsagePolicy.lastReading(cached, now: now)
+        func time(_ date: Date) -> String { LimitFormat.clockTime(date, now: now, timeZone: timeZone, locale: locale) }
+        func showReading(note: String?) {
+            guard let reading else { return }
+            target.windows = reading.windows
+            target.notes = [note].compactMap { $0 } + reading.notes
+            target.usageReadAt = reading.readAt
+        }
+        func showPause(until: Date) {
+            if let readAt = reading?.readAt {
+                showReading(note: "Anthropic paused usage checks until \(time(until)), so these are from \(time(readAt)). The account still works.")
+            } else {
+                target.notes = ["Anthropic paused usage checks until \(time(until)). The account still works."]
+            }
+        }
+
         switch usage {
-        case .success(let json):
-            target.windows = windows(from: json)
-            target.notes = notes(from: json)
-        case .failure(let error):
-            target.error = error.localizedDescription
+        case .read(let windows, let notes):
+            target.windows = windows
+            target.notes = notes
+            target.usageReadAt = now
+        case .paused(let until):
+            showPause(until: until)
+        case .rateLimited(let retryAfter):
+            showPause(until: cached?.pausedUntil ?? ClaudeUsagePolicy.pauseEnd(retryAfter: retryAfter, now: now))
+        case .unavailable(let message):
+            if let readAt = reading?.readAt {
+                showReading(note: "Couldn't check usage just now, so these are from \(time(readAt)).")
+            } else {
+                target.error = message
+            }
+        case .failed(let message):
+            target.error = message
+        case .recent:
+            // Inside the 10 minutes the reading is as fresh as it gets, unless the last check failed.
+            if let readAt = reading?.readAt {
+                let old = now.timeIntervalSince(readAt) >= ClaudeUsagePolicy.gap
+                showReading(note: old ? "Couldn't check usage just now, so these are from \(time(readAt))." : nil)
+            }
         }
         if let profile { apply(profile: profile, to: &target) }
     }
 
+    static func email(fromProfile profile: [String: Any]?) -> String? {
+        let account = profile?["account"] as? [String: Any]
+        return account?["email_address"] as? String ?? account?["email"] as? String
+    }
+
     static func apply(profile: [String: Any], to target: inout LimitAccount) {
-        if let account = profile["account"] as? [String: Any] {
-            target.email = account["email_address"] as? String ?? account["email"] as? String ?? target.email
-        }
+        target.email = email(fromProfile: profile) ?? target.email
         if let organization = profile["organization"] as? [String: Any],
            let type = organization["organization_type"] as? String ?? organization["rate_limit_tier"] as? String {
             target.plan = LimitFormat.plan(type) ?? target.plan

@@ -78,22 +78,24 @@ final class PlanLimitsTests: XCTestCase {
     func testClaudeProfileStillNamesTheAccountWhenUsageIsRateLimited() throws {
         var target = LimitAccount(id: "c", provider: .claude, plan: "Pro", source: "~/.claude")
         ClaudeLimitsParser.apply(
-            usage: .failure(LimitsError("Anthropic returned HTTP 429: Rate limited. Please try again later.")),
+            .rateLimited(retryAfter: "1560"), cached: nil,
             profile: try json(#"{"account":{"email_address":"mike@example.com"},"organization":{"organization_type":"claude_max"}}"#),
-            to: &target
+            now: Date(), to: &target
         )
         XCTAssertEqual(target.email, "mike@example.com")
         XCTAssertEqual(target.plan, "Max")
-        XCTAssertEqual(target.error, "Anthropic returned HTTP 429: Rate limited. Please try again later.")
+        XCTAssertNil(target.error)
+        XCTAssertEqual(target.notes.count, 1)
+        XCTAssertTrue(target.notes[0].hasPrefix("Anthropic paused usage checks until "))
         XCTAssertTrue(target.windows.isEmpty)
     }
 
     func testClaudeUsageFillsWindowsWhenTheProfileDoesNotAnswer() throws {
         var target = LimitAccount(id: "c", provider: .claude, source: "~/.claude")
+        let usage = try json(#"{"five_hour":{"utilization":12,"resets_at":"2026-10-17T05:00:00Z"}}"#)
         ClaudeLimitsParser.apply(
-            usage: .success(try json(#"{"five_hour":{"utilization":12,"resets_at":"2026-10-17T05:00:00Z"}}"#)),
-            profile: nil,
-            to: &target
+            .read(windows: ClaudeLimitsParser.windows(from: usage), notes: ClaudeLimitsParser.notes(from: usage)),
+            cached: nil, profile: nil, now: Date(), to: &target
         )
         XCTAssertNil(target.email)
         XCTAssertNil(target.error)
