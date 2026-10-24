@@ -58,7 +58,18 @@ requires macOS 14 or later, and is a self-contained Swift package.
   `security -i` on stdin; only ones too long for its 4032-byte line (MCP
   sign-ins make the main one ~6 KB) go as an argument, as Claude Code does. Only renew Claude logins whose config folder is known
   (`~/.claude` or Token Stats' Accounts folders). Never touch Codex or Muse
-  logins. Never log tokens. `LimitAccountMerger` shows one
+  logins. Never log tokens. Anthropic's usage endpoint answers 429 with a
+  Retry-After (about half an hour) when it's asked too often, while the account
+  and its profile keep working, so `ClaudeUsageCache.swift` keeps each login's
+  last good reading in `claude-usage-cache.json`, keyed by Keychain service and
+  shared by the app and `token-stats limits` (a `flock`ed read-modify-write of
+  one entry, renamed into place). `ClaudeUsagePolicy` asks for usage at most
+  every 10 minutes per login whatever triggered the refresh, claims the check
+  before asking so other processes wait, and waits out Retry-After (15 minutes
+  if it isn't seconds). A pause, 429, network error, timeout or 5xx shows the
+  last reading with a note (`ClaudeLimitsParser.apply`), minus limits that have
+  reset; 401/403 and renewal or Keychain problems stay errors. The profile call
+  and renewal still run on every refresh. `LimitAccountMerger` shows one
   card per email and removes duplicate logins Token Stats made itself. `token-stats limits` prints
   the same data for checking without the UI.
 - `CLIUpdater.swift` updates the agent CLIs once a day (checked hourly) and

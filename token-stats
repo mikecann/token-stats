@@ -40,7 +40,7 @@ case "${1:-start}" in
     exec bash "$SCRIPT_DIR/setup_mac.sh"
     ;;
   *)
-    echo "Usage: token-stats [start|limits [codex|claude]|usage|update-clis|restart|stop|setup]" >&2
+    echo "Usage: token-stats [start|limits [codex|claude|grok|muse] [--json]|usage|update-clis|restart|stop|setup]" >&2
     exit 2
     ;;
 esac

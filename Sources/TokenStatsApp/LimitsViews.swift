@@ -139,13 +139,19 @@ struct AccountGlanceRow: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .help(error)
+            } else if account.windows.isEmpty, !account.notes.isEmpty {
+                // Nothing to show yet but nothing wrong either, like Anthropic pausing usage checks.
+                Image(systemName: "info.circle")
+                    .foregroundStyle(.secondary)
+                    .help(account.notes.joined(separator: "\n"))
             }
             ForEach(account.glanceWindows) { GlanceGauge(window: $0, color: account.provider.color) }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.04)))
-        .help(account.windows.map { "\($0.title): \(Int($0.remainingPercent.rounded()))% left \(LimitFormat.resetText($0.resetsAt))" }.joined(separator: "\n"))
+        .help((account.windows.map { "\($0.title): \(Int($0.remainingPercent.rounded()))% left \(LimitFormat.resetText($0.resetsAt))" }
+            + account.notes).joined(separator: "\n"))
     }
 }
 
@@ -217,8 +223,9 @@ struct LimitAccountCard: View {
             }
             ForEach(account.windows) { LimitBar(window: $0, color: account.provider.color, compact: compact) }
             if !account.notes.isEmpty {
+                // With no limits to show, the note is the card's whole message, so it gets a size up.
                 Text(account.notes.joined(separator: " · "))
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(account.windows.isEmpty ? .caption : .caption2).foregroundStyle(.secondary)
             }
         }
         .alert("Remove \(account.displayName)?", isPresented: $confirmingRemoval) {

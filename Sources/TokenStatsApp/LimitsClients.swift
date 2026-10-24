@@ -7,6 +7,7 @@ import Security
 enum CodexLimitsClient {
     static func fetch(home: URL, label: String, folder: URL?) async -> LimitAccount {
         var account = LimitAccount(id: "codex:\(home.path)", provider: .codex, source: label, folder: folder)
+        account.configDir = home
         guard let executable = CommandLocator.find("codex") else {
             account.error = "Couldn't find the codex command"
             return account
@@ -61,18 +62,19 @@ enum ClaudeLimitsClient {
         return Array(Set(services)).sorted()
     }
 
-    static func fetch(service: String, label: String, folder: URL?) async -> LimitAccount {
+    static func fetch(service: String, label: String, folder: URL?, cache: ClaudeUsageCache = .standard) async -> LimitAccount {
         var account = LimitAccount(id: "claude:\(service)", provider: .claude, source: label, folder: folder)
+        let configDir = ClaudeLoginRenewal.configDir(
+            service: service, folder: folder,
+            home: FileManager.default.homeDirectoryForCurrentUser, environment: ProcessInfo.processInfo.environment
+        )
+        account.configDir = configDir
         guard var oauth = readSaved(service: service)?["claudeAiOauth"] as? [String: Any] else {
             account.error = "Couldn't read this Claude login from the Keychain"
             return account
         }
         account.plan = LimitFormat.plan(oauth["subscriptionType"] as? String)
         let expires = LimitFormat.isoDate(oauth["expiresAt"])
-        let configDir = ClaudeLoginRenewal.configDir(
-            service: service, folder: folder,
-            home: FileManager.default.homeDirectoryForCurrentUser, environment: ProcessInfo.processInfo.environment
-        )
         if let configDir, let expires, expires < Date().addingTimeInterval(ClaudeLoginRenewal.margin) {
             do {
                 oauth = try await renew(service: service, configDir: configDir)
@@ -94,25 +96,39 @@ enum ClaudeLimitsClient {
             account.error = "Couldn't read this Claude login from the Keychain"
             return account
         }
-        do {
-            async let usage = get("https://api.anthropic.com/api/oauth/usage", token: token)
-            async let profile = try? get("https://api.anthropic.com/api/oauth/profile", token: token)
-            let usageJSON = try await usage
-            if ProcessInfo.processInfo.environment["TOKEN_STATS_DEBUG"] == "1",
-               let data = try? JSONSerialization.data(withJSONObject: usageJSON, options: [.prettyPrinted, .sortedKeys]) {
-                print(String(decoding: data, as: UTF8.self))
-            }
-            account.windows = ClaudeLimitsParser.windows(from: usageJSON)
-            account.notes = ClaudeLimitsParser.notes(from: usageJSON)
-            if let ending = ClaudeLoginRenewal.endingNote(
-                refreshTokenExpiresAt: LimitFormat.isoDate(oauth["refreshTokenExpiresAt"]), now: Date(),
-                signInAgain: folder == nil ? "Run claude and sign in again to keep it." : "Remove this login and add it again to keep it."
-            ) {
-                account.notes.append(ending)
-            }
-            if let profile = await profile { ClaudeLimitsParser.apply(profile: profile, to: &account) }
-        } catch {
-            account.error = error.localizedDescription
+        async let profile = try? get("https://api.anthropic.com/api/oauth/profile", token: token)
+        // The usage endpoint is asked at most every 10 minutes per login, shared with every other
+        // Token Stats process through the cache, and not at all while Anthropic has said to wait.
+        let now = Date()
+        var check = ClaudeUsageCheck.ask
+        var entry = cache.update(service) { entry in
+            check = ClaudeUsagePolicy.check(entry, now: now)
+            // Claiming the check before asking makes another process that turns up meanwhile wait.
+            return check == .ask ? ClaudeUsagePolicy.claim(entry, now: now) : entry
+        }
+        if check != .ask, let cached = entry,
+           !ClaudeUsagePolicy.sameAccount(cached, email: ClaudeLimitsParser.email(fromProfile: await profile)) {
+            // A different account has signed in here since, so the wait and the reading were someone else's.
+            check = .ask
+            entry = cache.update(service) { _ in ClaudeUsagePolicy.claim(nil, now: now) }
+        }
+        let usage: ClaudeUsageOutcome
+        switch check {
+        case .paused(let until):
+            usage = .paused(until: until)
+        case .recent:
+            usage = .recent
+        case .ask:
+            usage = await askUsage(token: token)
+            let email = ClaudeLimitsParser.email(fromProfile: await profile)
+            entry = cache.update(service) { ClaudeUsagePolicy.record(usage, in: $0, email: email, now: Date()) }
+        }
+        ClaudeLimitsParser.apply(usage, cached: entry, profile: await profile, now: Date(), to: &account)
+        if account.error == nil, let ending = ClaudeLoginRenewal.endingNote(
+            refreshTokenExpiresAt: LimitFormat.isoDate(oauth["refreshTokenExpiresAt"]), now: Date(),
+            signInAgain: folder == nil ? "Run claude and sign in again to keep it." : "Remove this login and add it again to keep it."
+        ) {
+            account.notes.append(ending)
         }
         return account
     }
@@ -198,13 +214,32 @@ enum ClaudeLimitsClient {
         guard result.status == 0 else { throw RenewalError(status: 0, reason: "couldn't save the renewed login to the Keychain") }
     }
 
-    private static func get(_ url: String, token: String) async throws -> [String: Any] {
+    private static func request(_ url: String, token: String) -> URLRequest {
         var request = URLRequest(url: URL(string: url)!, timeoutInterval: 20)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("claude-code/\(claudeVersion)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        return request
+    }
+
+    private static func askUsage(token: String) async -> ClaudeUsageOutcome {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request("https://api.anthropic.com/api/oauth/usage", token: token))
+            let http = response as? HTTPURLResponse
+            let retryAfter = http?.value(forHTTPHeaderField: "Retry-After")
+            if ProcessInfo.processInfo.environment["TOKEN_STATS_DEBUG"] == "1" {
+                let header = "claude usage HTTP \(http?.statusCode ?? 0)\(retryAfter.map { ", Retry-After \($0)" } ?? ""): "
+                FileHandle.standardError.write(Data((header + String(decoding: data.prefix(4000), as: UTF8.self) + "\n").utf8))
+            }
+            return ClaudeLimitsParser.outcome(status: http?.statusCode ?? 0, retryAfter: retryAfter, body: data)
+        } catch {
+            return ClaudeLimitsParser.outcome(error: error)
+        }
+    }
+
+    private static func get(_ url: String, token: String) async throws -> [String: Any] {
+        let (data, response) = try await URLSession.shared.data(for: request(url, token: token))
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])
@@ -391,6 +426,7 @@ enum GrokLimitsClient {
               let login = entry.value as? [String: Any],
               var token = login["key"] as? String else { return nil }
         var account = LimitAccount(id: "grok:~/.grok", provider: .grok, email: login["email"] as? String, source: "~/.grok")
+        account.configDir = authURL.deletingLastPathComponent()
         if let expires = LimitFormat.isoDate(login["expires_at"]), expires < Date().addingTimeInterval(GrokLoginRenewal.margin) {
             do {
                 token = try await renew(entry: entry.key)
@@ -411,7 +447,7 @@ enum GrokLimitsClient {
             let (body, response) = try await URLSession.shared.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             if ProcessInfo.processInfo.environment["TOKEN_STATS_DEBUG"] == "1" {
-                print("grok billing HTTP \(status): \(String(decoding: body.prefix(4000), as: UTF8.self))")
+                FileHandle.standardError.write(Data("grok billing HTTP \(status): \(String(decoding: body.prefix(4000), as: UTF8.self))\n".utf8))
             }
             guard (200..<300).contains(status), let json = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
                 throw LimitsError("Grok returned HTTP \(status)")
@@ -499,6 +535,7 @@ enum MuseLimitsClient {
         if let cached = await cache.fresh(within: interval) { return cached }
 
         var account = LimitAccount(id: "muse:meta", provider: .muse, email: meta["user_email"] as? String, source: "~/.config/muse")
+        account.configDir = authURL.deletingLastPathComponent()
         guard let token = readToken() else {
             account.error = "Couldn't read Muse's login from the Keychain"
             return account
@@ -531,7 +568,7 @@ enum MuseLimitsClient {
                 // Never print the minted key itself.
                 let shape = json.map { MuseLimitsParser.redacted($0) } ?? ["body": String(decoding: body.prefix(300), as: UTF8.self)]
                 let text = (try? JSONSerialization.data(withJSONObject: shape, options: [.sortedKeys])).map { String(decoding: $0, as: UTF8.self) } ?? ""
-                print("muse \(method) HTTP \(lastStatus): \(text)")
+                FileHandle.standardError.write(Data("muse \(method) HTTP \(lastStatus): \(text)\n".utf8))
             }
             if (200..<300).contains(lastStatus), let json { return json }
             if lastStatus != 404 && lastStatus != 405 { break }
