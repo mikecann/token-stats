@@ -75,8 +75,10 @@ requires macOS 14 or later, and is a self-contained Swift package.
 - `CLIUpdater.swift` updates the agent CLIs once a day (checked hourly) and
   `token-stats update-clis` runs it by hand. Keep the updates sequential and
   never start an agent session to update one (Muse uses `MUSE_LAUNCHER_INSTALL=1`).
-- The app is a `MenuBarExtra` plus one `Window`. Closing the window drops it to
-  an accessory app; it only quits from the menu's Quit button.
+- The app is a `MenuBarExtra` plus one `Window`. Closing the window, or ⌘Q
+  (the app menu's Quit is replaced by "Close to Menu Bar"), drops it to an
+  accessory app. It only quits from the Quit button in the window, or when
+  macOS quits it (logout, restart, Activity Monitor).
 - `DashboardSnapshot.swift` and `UsageAggregator.swift` build daily summaries;
   `DashboardView.swift` renders the app and PNG export.
 

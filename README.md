@@ -57,7 +57,7 @@ or all time, then switch between tokens and API-equivalent cost. Click a provide
 to show or hide it. The dashboard includes totals, cached input, active days, and
 model breakdowns. Use the export button for a 1400 x 900 PNG.
 
-The menu bar icon shows a gauge and the percentage left on whichever 5-hour or weekly limit is closest to running out. Dollar allowances and per-model limits don't count towards it. Click it for one line per account with what's left on its 5-hour and weekly limits. Everything else (every limit and when it resets, Add account, Open at login, CLI updates, Quit) is in the main window. Limits refresh every 5 minutes and whenever you open the menu or the window, though each Claude account only asks Anthropic for its usage every 10 minutes (more on that below).
+The menu bar icon shows a gauge and the percentage left on whichever 5-hour or weekly limit is closest to running out. Dollar allowances and per-model limits don't count towards it. Click it for one line per account with what's left on its 5-hour and weekly limits. Everything else (every limit and when it resets, Add account, Open at login, CLI updates, Quit) is in the main window. Limits refresh every 5 minutes and whenever you open the menu or the window, though each Claude account only asks Anthropic for its usage every 10 minutes (more on that below). Closing the window or pressing ⌘Q leaves it running in the menu bar; the Quit button in the window really quits.
 
 ```bash
 token-stats          # Open the app, building it first if missing

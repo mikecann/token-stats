@@ -30,6 +30,12 @@ struct TokenStatsApplication: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            // Token Stats lives in the menu bar, so ⌘Q just puts it back there. The Quit button
+            // in the window really quits, and so does a quit from macOS (logging out, restarting).
+            CommandGroup(replacing: .appTermination) {
+                Button("Close to Menu Bar") { appDelegate.closeToMenuBar() }
+                    .keyboardShortcut("q")
+            }
         }
     }
 }
@@ -79,6 +85,11 @@ final class TokenStatsAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if !hasVisibleWindows { showWindow() }
         return true
+    }
+
+    func closeToMenuBar() {
+        NSApp.windows.filter { $0.title == Self.windowTitle }.forEach { $0.close() }
+        NSApp.setActivationPolicy(.accessory)
     }
 
     func showWindow() {
