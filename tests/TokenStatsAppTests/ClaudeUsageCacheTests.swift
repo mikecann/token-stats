@@ -74,14 +74,16 @@ final class ClaudeUsageCacheTests: XCTestCase {
         XCTAssertEqual(ClaudeUsagePolicy.check(entry, now: now.addingTimeInterval(120)), .recent)
     }
 
-    func testAsksInsideTheGapWhenThereIsNoReadingToShow() {
+    func testWaitsInsideTheGapEvenWithNoReadingToShow() {
+        // Another process may be asking right now, or the last check failed. Asking again would be
+        // the very thing that gets a login a 429, so the gap holds whether or not there's a reading.
         let neverRead = ClaudeUsageCacheEntry(checkedAt: now.addingTimeInterval(-60))
-        XCTAssertEqual(ClaudeUsagePolicy.check(neverRead, now: now), .ask)
+        XCTAssertEqual(ClaudeUsagePolicy.check(neverRead, now: now), .recent)
 
         var allReset = reading
         allReset.checkedAt = now.addingTimeInterval(-60)
         allReset.windows = [LimitWindow(id: "five_hour", title: "5-hour", usedPercent: 90, resetsAt: now.addingTimeInterval(-1))]
-        XCTAssertEqual(ClaudeUsagePolicy.check(allReset, now: now), .ask)
+        XCTAssertEqual(ClaudeUsagePolicy.check(allReset, now: now), .recent)
 
         // A plan that reports no limits at all is still a reading, so it waits like any other.
         var noLimits = reading
@@ -123,6 +125,8 @@ final class ClaudeUsageCacheTests: XCTestCase {
         XCTAssertEqual(claimed.readAt, readAt)
         XCTAssertEqual(ClaudeUsagePolicy.check(claimed, now: now.addingTimeInterval(1)), .recent)
         XCTAssertEqual(ClaudeUsagePolicy.claim(nil, now: now), ClaudeUsageCacheEntry(checkedAt: now))
+        // A claim on a login with no reading yet holds other callers too.
+        XCTAssertEqual(ClaudeUsagePolicy.check(ClaudeUsagePolicy.claim(nil, now: now), now: now.addingTimeInterval(1)), .recent)
     }
 
     func testAGoodReadingReplacesTheCacheAndEndsAnyPause() {
@@ -263,6 +267,14 @@ final class ClaudeUsageCacheTests: XCTestCase {
         XCTAssertEqual(account.windows, windows)
         XCTAssertEqual(account.notes, ["$48.85 extra usage spent"])
         XCTAssertEqual(account.usageReadAt, readAt)
+    }
+
+    func testARecentSkipWithNoReadingSaysSoCalmly() {
+        let account = show(.recent, cached: ClaudeUsageCacheEntry(checkedAt: now.addingTimeInterval(-60)))
+        XCTAssertNil(account.error)
+        XCTAssertTrue(account.windows.isEmpty)
+        XCTAssertEqual(account.notes, ["No usage numbers yet. Token Stats checks again in a few minutes."])
+        XCTAssertNil(account.usageReadAt)
     }
 
     func testARecentSkipAfterAFailedCheckStillSaysTheNumbersAreOld() {
