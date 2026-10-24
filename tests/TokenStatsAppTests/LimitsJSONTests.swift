@@ -47,7 +47,7 @@ final class LimitsJSONTests: XCTestCase {
 
         let result = try document([account])
         let encoded = try XCTUnwrap((result["accounts"] as? [[String: Any]])?.first)
-        XCTAssertEqual(Set(encoded.keys), ["provider", "plan", "email", "configDir", "label", "windows", "notice"])
+        XCTAssertEqual(Set(encoded.keys), ["provider", "plan", "email", "configDir", "label", "windows", "notice", "usageReadAt"])
         for key in ["plan", "email", "configDir", "label", "notice"] {
             XCTAssertTrue(encoded[key] is NSNull, key)
         }
@@ -116,6 +116,28 @@ final class LimitsJSONTests: XCTestCase {
         XCTAssertNotEqual(try Data(contentsOf: url), latest)
         XCTAssertEqual(try Data(contentsOf: url), try LimitsJSON.encode([], generatedAt: later))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path), ["limits.json"])
+    }
+
+    func testUsageReadAtSaysHowOldTheNumbersAre() throws {
+        let readAt = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-24T12:12:00Z"))
+        let checkedAt = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-24T12:40:00Z"))
+        var cached = LimitAccount(id: "claude:main", provider: .claude, source: "~/.claude", fetchedAt: checkedAt)
+        cached.windows = [LimitWindow(id: "seven_day", title: "Weekly", usedPercent: 20, resetsAt: nil)]
+        cached.usageReadAt = readAt
+        cached.notes = ["Couldn't check usage just now, so these are from 8:12 pm."]
+        // Other providers read their numbers on every check.
+        var codex = LimitAccount(id: "codex:main", provider: .codex, source: "~/.codex", fetchedAt: checkedAt)
+        codex.windows = [LimitWindow(id: "codex.primary", title: "Weekly", usedPercent: 6, resetsAt: nil)]
+        var paused = LimitAccount(id: "claude:other", provider: .claude, source: "claude-1", fetchedAt: checkedAt)
+        paused.notes = ["Anthropic paused usage checks until 8:57 pm. The account still works."]
+
+        let encoded = try XCTUnwrap(try document([cached, codex, paused])["accounts"] as? [[String: Any]])
+
+        XCTAssertEqual(encoded[0]["usageReadAt"] as? String, "2026-10-24T12:12:00Z")
+        XCTAssertEqual(encoded[0]["notice"] as? String, "Couldn't check usage just now, so these are from 8:12 pm.")
+        XCTAssertEqual(encoded[1]["usageReadAt"] as? String, "2026-10-24T12:40:00Z")
+        XCTAssertTrue(encoded[2]["usageReadAt"] is NSNull)
+        XCTAssertEqual(encoded[2]["notice"] as? String, "Anthropic paused usage checks until 8:57 pm. The account still works.")
     }
 
     func testIncompleteRefreshIsMarkedInTheDocument() throws {
