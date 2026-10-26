@@ -33,6 +33,10 @@ case "${1:-start}" in
     [[ -x "$BIN" ]] || bash "$SCRIPT_DIR/setup_mac.sh" >/dev/null
     exec "$BIN" --update-clis
     ;;
+  share-config)
+    shift
+    exec python3 "$SCRIPT_DIR/share_config.py" "$@"
+    ;;
   stop|kill)
     exec bash "$SCRIPT_DIR/kill.sh"
     ;;
@@ -40,7 +44,7 @@ case "${1:-start}" in
     exec bash "$SCRIPT_DIR/setup_mac.sh"
     ;;
   *)
-    echo "Usage: token-stats [start|limits [codex|claude|grok|muse] [--json]|usage|update-clis|restart|stop|setup]" >&2
+    echo "Usage: token-stats [start|limits [codex|claude|grok|muse] [--json]|usage|update-clis|share-config [--dry-run]|restart|stop|setup]" >&2
     exit 2
     ;;
 esac

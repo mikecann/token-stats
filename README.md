@@ -64,6 +64,7 @@ token-stats          # Open the app, building it first if missing
 token-stats limits   # Print every plan's limits in the terminal (or: limits codex, limits claude)
 token-stats usage    # Read the session logs and print record counts and 30-day token totals
 token-stats update-clis  # Update Claude Code, Codex, Grok and Muse now
+token-stats share-config # Give every Claude login the same instructions, settings, skills and memory
 token-stats restart  # Stop, build a debug app, and launch it
 token-stats stop     # Stop the running app
 token-stats setup    # Rebuild and stage the release app
@@ -98,6 +99,7 @@ Homebrew installation. There is a pure Swift fallback, so it isn't required.
 - **Grok** keeps one login per Mac, so **Add account → Grok** only works when it's signed out. Remove the current one first to switch.
 - **Duplicates:** two logins for the same email are the same plan, so they show as one card. If you add one that's already there, Token Stats signs that extra login out and removes its folder. It never touches `~/.claude` or `~/.codex`.
 - **More accounts:** choose **Add account** in the main window. Token Stats makes a folder for the login under `~/Library/Application Support/Token Stats/Accounts` and opens Terminal on `codex login` or `claude auth login` pointed at it. Switch accounts in the browser first if it picks the wrong one. The new account shows up by itself a few seconds after you finish signing in. To use that account yourself, run `CODEX_HOME=<folder> codex` or `CLAUDE_CONFIG_DIR=<folder> claude`.
+- **Sharing setup between Claude logins:** each Claude login Token Stats adds has its own config folder, so out of the box it has its own `CLAUDE.md`, settings, skills and memories. `token-stats share-config` links each login's `CLAUDE.md`, `settings.json` and skills back to `~/.claude`, and moves every login's memories into `~/.agents/memory/<project>` with a link left in their place, so something one login remembers, they all do. It also adds a session start hook that keeps new logins and projects linked, plus allow rules so memory saves aren't blocked. Memories with the same name and different text are both kept, the second with the login's name added. It's safe to run again, and `--dry-run` shows what it would change. One limit: a `~/.claude` session in the default ask-every-time permission mode can't save memories through the link, because Claude Code protects everything under `~/.claude`. Auto and bypass modes are fine, and so are the other logins in every mode.
 - An expired Claude login shows a warning until you run `claude` with that account again. Token Stats never refreshes or rewrites anyone's login.
 
 ### Reading the limits from a script
@@ -155,7 +157,8 @@ app without adding the command to PATH. `install.sh` does both.
 
 Set `TOKEN_STATS_APP_DIR` to stage a bundle elsewhere. `build-app.sh` also accepts
 `TOKEN_STATS_BUILD_CONFIGURATION=debug` or `release` (the default).
-The Swift package has no external dependencies. Tests cover usage parsers,
+`python3 -m unittest discover -s tests -p 'test_*.py'` runs the `share-config`
+tests. The Swift package has no external dependencies. Tests cover usage parsers,
 pricing, aggregation, dashboard snapshots, and OpenRouter request construction;
 they don't need account keys or live API calls.
 

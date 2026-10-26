@@ -94,6 +94,16 @@ bash restart.sh
 and installs the launcher symlink (default `~/.local/bin`). `token-stats` resolves
 that symlink so its subcommands find scripts in this clone.
 
+`share_config.py` (`token-stats share-config`) links every Claude login in the
+Accounts folder to `~/.claude`'s CLAUDE.md, settings.json and skills, and moves
+each project's memory into `~/.agents/memory/<project>` with symlinks left in
+`~/.claude` and every account. Memory can't live under `~/.claude`: Claude Code
+blocks other logins from writing there. Claude Code also checks the real path
+behind a symlink, so the script adds Read/Edit allow rules for the links and
+`~/.agents/memory`, plus a SessionStart hook (`--hook`) that links each new
+project as a session starts. Never delete a memory while merging; clashing
+names keep both copies. Tests: `python3 -m unittest discover -s tests -p 'test_*.py'`.
+
 For bundle verification without replacing the installed app:
 
 ```bash
