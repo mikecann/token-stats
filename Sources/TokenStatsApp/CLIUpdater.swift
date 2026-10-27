@@ -5,6 +5,10 @@ struct CLITool: Equatable, Sendable {
     let name: String
     let executable: URL
     let update: [String]
+    /// Prints the newest released version without installing anything. When it matches the
+    /// installed one the update is skipped, because npm reinstalls a package even at the same
+    /// version, and that swaps files out from under any Codex that's running.
+    var latestVersion: [String]? = nil
     var environment: [String: String] = [:]
     var versionEnvironment: [String: String] = [:]
 
@@ -18,7 +22,10 @@ struct CLITool: Equatable, Sendable {
         if let codex = find("codex"), !codex.path.contains(".app/") {
             let npm = codex.deletingLastPathComponent().appendingPathComponent("npm")
             if FileManager.default.isExecutableFile(atPath: npm.path) {
-                tools.append(CLITool(name: "codex", executable: codex, update: [npm.path, "install", "-g", "@openai/codex@latest"]))
+                tools.append(CLITool(
+                    name: "codex", executable: codex, update: [npm.path, "install", "-g", "@openai/codex@latest"],
+                    latestVersion: [npm.path, "view", "@openai/codex@latest", "version"]
+                ))
             }
         }
         if let grok = find("grok") {
@@ -127,18 +134,18 @@ final class CLIUpdater: ObservableObject {
         UserDefaults.standard.set(try? JSONEncoder().encode(results), forKey: Keys.results)
     }
 
+    /// Runs a command with extra environment and a timeout; a seam so tests can fake the CLIs.
+    typealias CommandRunner = @Sendable (_ command: [String], _ environment: [String: String], _ timeout: TimeInterval) -> (status: Int32, output: String)
+
+    nonisolated static let processRunner: CommandRunner = { ProcessRunner.run($0, environment: $1, timeout: $2) }
+
     /// Runs one after another so two package managers never fight over PATH or locks.
     nonisolated static func updateAll(logURL: URL) -> [CLIUpdateResult] {
         var log = "\n== \(Date().formatted(.iso8601))\n"
         let results = CLITool.installed().map { tool -> CLIUpdateResult in
-            let before = currentVersion(tool)
-            let run = ProcessRunner.run(tool.update, environment: tool.environment, timeout: 10 * 60)
-            let after = currentVersion(tool)
-            log += "-- \(tool.name): \(before ?? "?") -> \(after ?? "?") (exit \(run.status))\n\(run.output.suffix(2000))\n"
-            return CLIUpdateResult(
-                name: tool.name, before: before, after: after, succeeded: run.status == 0,
-                detail: String(run.output.split(separator: "\n").last ?? "")
-            )
+            let (result, entry) = update(tool)
+            log += entry
+            return result
         }
         try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let handle = try? FileHandle(forWritingTo: logURL) {
@@ -151,8 +158,31 @@ final class CLIUpdater: ObservableObject {
         return results
     }
 
-    nonisolated private static func currentVersion(_ tool: CLITool) -> String? {
-        CLITool.version(from: ProcessRunner.run([tool.executable.path, "--version"], environment: tool.versionEnvironment, timeout: 60).output)
+    /// Updates one CLI and returns its result plus its entry for `cli-updates.log`.
+    nonisolated static func update(_ tool: CLITool, run: CommandRunner = processRunner) -> (result: CLIUpdateResult, log: String) {
+        let before = currentVersion(tool, run: run)
+        // If the check fails (offline, registry error) this falls through to the update, as before.
+        if let check = tool.latestVersion, let before,
+           case let latest = run(check, tool.environment, 60), latest.status == 0,
+           CLITool.version(from: latest.output) == before {
+            return (
+                CLIUpdateResult(name: tool.name, before: before, after: before, succeeded: true, detail: "Already up to date (\(before))"),
+                "-- \(tool.name): \(before) is the latest, install skipped\n"
+            )
+        }
+        let updated = run(tool.update, tool.environment, 10 * 60)
+        let after = currentVersion(tool, run: run)
+        return (
+            CLIUpdateResult(
+                name: tool.name, before: before, after: after, succeeded: updated.status == 0,
+                detail: String(updated.output.split(separator: "\n").last ?? "")
+            ),
+            "-- \(tool.name): \(before ?? "?") -> \(after ?? "?") (exit \(updated.status))\n\(updated.output.suffix(2000))\n"
+        )
+    }
+
+    nonisolated private static func currentVersion(_ tool: CLITool, run: CommandRunner) -> String? {
+        CLITool.version(from: run([tool.executable.path, "--version"], tool.versionEnvironment, 60).output)
     }
 }
 
