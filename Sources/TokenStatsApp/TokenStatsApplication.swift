@@ -5,6 +5,9 @@ import SwiftUI
 struct TokenStatsApplication: App {
     @NSApplicationDelegateAdaptor(TokenStatsAppDelegate.self) private var appDelegate
     @StateObject private var limits = LimitsStore.shared
+    // Threadbear shows the same limits now, so the icon can go while Token Stats keeps
+    // running for what only it does: writing limits.json, renewing logins, updating CLIs.
+    @AppStorage(TokenStatsAppDelegate.showMenuBarIconKey) private var showMenuBarIcon = true
 
     init() {
         LimitsCommand.runIfRequested()
@@ -15,7 +18,7 @@ struct TokenStatsApplication: App {
     }
 
     var body: some Scene {
-        MenuBarExtra {
+        MenuBarExtra(isInserted: $showMenuBarIcon) {
             MenuBarPanel(store: limits) { appDelegate.showWindow() }
         } label: {
             MenuBarLabel(store: limits)
@@ -25,6 +28,8 @@ struct TokenStatsApplication: App {
 
         Window(TokenStatsAppDelegate.windowTitle, id: "main") {
             DashboardView()
+                // With the icon hidden its label never draws, so the window hands over openWindow too.
+                .background(OpenWindowCapture(delegate: appDelegate))
         }
         .defaultSize(width: 1180, height: 820)
         .windowStyle(.hiddenTitleBar)
@@ -40,19 +45,23 @@ struct TokenStatsApplication: App {
     }
 }
 
-/// The menu bar label is always on screen, so it hands SwiftUI's openWindow action to the delegate.
+/// Hands SwiftUI's openWindow action to the delegate, from the menu bar label or the window,
+/// whichever draws first. At login the window opens and closes at once, which is enough.
 private struct OpenWindowCapture: View {
     let delegate: TokenStatsAppDelegate
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Color.clear.onAppear { delegate.openMainWindow = { openWindow(id: "main") } }
+        Color.clear.onAppear {
+            if delegate.openMainWindow == nil { delegate.openMainWindow = { openWindow(id: "main") } }
+        }
     }
 }
 
 @MainActor
 final class TokenStatsAppDelegate: NSObject, NSApplicationDelegate {
     static let windowTitle = "Token Stats"
+    static let showMenuBarIconKey = "showMenuBarIcon"
     // SwiftUI drops the window when it closes, so only its own openWindow action can bring it back.
     var openMainWindow: (() -> Void)?
 

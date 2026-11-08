@@ -67,16 +67,20 @@ struct MenuBarPanel: View {
     }
 }
 
-/// Add account, Open at login, daily CLI updates and Quit, under the limits in the main window.
+/// Add account, Show in menu bar, Open at login, daily CLI updates and Quit, under the limits in the main window.
 struct LimitsSettingsBar: View {
     @ObservedObject var store: LimitsStore
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @AppStorage(TokenStatsAppDelegate.showMenuBarIconKey) private var showMenuBarIcon = true
 
     var body: some View {
         HStack(alignment: .top, spacing: 18) {
             CLIUpdatesRow(updater: CLIUpdater.shared)
                 .frame(maxWidth: 420, alignment: .leading)
             Spacer()
+            // Hidden, it still runs; open Token Stats from Finder or `token-stats` to get back here.
+            Toggle("Show in menu bar", isOn: $showMenuBarIcon)
+                .toggleStyle(.checkbox)
             Toggle("Open at login", isOn: $launchAtLogin)
                 .toggleStyle(.checkbox)
                 .onChange(of: launchAtLogin) { _, enabled in
