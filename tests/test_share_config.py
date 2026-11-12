@@ -164,6 +164,21 @@ class ShareConfigTests(unittest.TestCase):
         self.assertEqual(len(hooks), 1)
         self.assertEqual(hooks[0]["hooks"][0]["command"], "token-stats share-config --hook")
 
+    def test_a_hook_with_a_missing_launcher_or_silenced_errors_is_replaced(self):
+        for old in ('"/nowhere/token-stats" share-config --hook', f'"{sys.executable}" share-config --hook 2>/dev/null || true'):
+            settings = self.settings()
+            settings["hooks"] = {"SessionStart": [{"hooks": [{"type": "command", "command": old}]}]}
+            (self.main / "settings.json").write_text(json.dumps(settings))
+            self.run_share(hook_command="new share-config --hook")
+            hooks = self.settings()["hooks"]["SessionStart"]
+            self.assertEqual([h["command"] for g in hooks for h in g["hooks"]], ["new share-config --hook"])
+
+    def test_default_hook_command_uses_the_repo_launcher_and_logs_errors(self):
+        command = share_config.default_hook_command()
+        self.assertIn(str(Path(share_config.__file__).resolve().parent / "token-stats"), command)
+        self.assertNotIn("/dev/null", command)
+        self.assertFalse(share_config._hook_is_stale(command))
+
     def test_rules_under_home_use_the_tilde_form(self):
         rules = share_config.memory_rules(Path.home() / ".claude", Path.home() / "Accounts", Path.home() / ".agents" / "memory")
         self.assertIn("Edit(~/.agents/memory/**)", rules)

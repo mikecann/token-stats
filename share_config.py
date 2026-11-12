@@ -23,6 +23,7 @@ import filecmp
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -226,8 +227,13 @@ def _update_settings(settings_path, main, accounts, shared_memory, hook_command,
             changed = True
     if hook_command:
         session_start = settings.setdefault("hooks", {}).setdefault("SessionStart", [])
-        commands = [h.get("command", "") for group in session_start for h in group.get("hooks", [])]
-        if not any(HOOK_MARKER in command for command in commands):
+        ours = [h for group in session_start for h in group.get("hooks", []) if HOOK_MARKER in h.get("command", "")]
+        for hook in ours:
+            if _hook_is_stale(hook["command"]):
+                report.changes.append(f"replace SessionStart hook {hook['command']!r} in {settings_path}")
+                hook["command"] = hook_command
+                changed = True
+        if not ours:
             session_start.append({"hooks": [{"type": "command", "command": hook_command}]})
             report.changes.append(f"add SessionStart hook to {settings_path}")
             changed = True
@@ -240,9 +246,25 @@ def _update_settings(settings_path, main, accounts, shared_memory, hook_command,
         os.replace(temporary, real)
 
 
+def _hook_is_stale(command):
+    # A launcher that has gone (~/.local/bin/token-stats went when the app was
+    # retired) fails every session start, and 2>/dev/null hid that, so both
+    # get swapped for the current command rather than left alone.
+    if "2>/dev/null" in command:
+        return True
+    try:
+        launcher = shlex.split(command)[0]
+    except (ValueError, IndexError):
+        return False
+    return os.path.isabs(launcher) and not os.path.exists(launcher)
+
+
 def default_hook_command():
-    launcher = shutil.which("token-stats") or str(Path(__file__).resolve().parent / "token-stats")
-    return f'"{launcher}" {HOOK_MARKER} 2>/dev/null || true'
+    # The repo's launcher first: an installed copy on PATH can outlive the app.
+    repo_launcher = Path(__file__).resolve().parent / "token-stats"
+    launcher = str(repo_launcher) if repo_launcher.exists() else shutil.which("token-stats") or str(repo_launcher)
+    # Errors go to a log rather than nowhere, but never block the session.
+    return f'"{launcher}" {HOOK_MARKER} 2>>"$HOME/Library/Logs/share-config-hook.log" || true'
 
 
 def main(argv=None):
